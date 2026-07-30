@@ -4,9 +4,15 @@
   "cleanUrls": true,
   "headers": [
     {
-      "source": "/(.*)",
+      "source": "/(index\\.html)?",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=60" }
+        { "key": "Cache-Control", "value": "no-store, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/(.*)\\.(js|css|json)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache" }
       ]
     }
   ]

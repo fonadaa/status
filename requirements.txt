@@ -2,3 +2,4 @@ playwright>=1.40.0
 python-dotenv>=1.0.0
 ddddocr>=1.5.0
 onnxruntime==1.19.2
+Pillow>=10.0.0

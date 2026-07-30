@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
+import io
 import json
 import os
 import re
@@ -16,6 +18,7 @@ import time
 
 import ddddocr
 from dotenv import load_dotenv
+from PIL import Image, ImageFilter, ImageOps
 from playwright.sync_api import sync_playwright
 
 load_dotenv()
@@ -159,15 +162,56 @@ def check_passport(browser, username: str, password: str, file_no: str) -> dict:
 
 
 class CaptchaSolver:
-    """Single OCR model — keeps RAM low on free Render."""
+    """Two OCR models + PIL preprocessing — still light on RAM."""
 
     def __init__(self) -> None:
         print("Loading OCR…", flush=True)
         self.ocr = ddddocr.DdddOcr(show_ad=False)
+        try:
+            self.ocr_beta = ddddocr.DdddOcr(show_ad=False, beta=True)
+        except Exception:
+            self.ocr_beta = None
 
-    def ocr_image(self, png: bytes) -> str:
-        raw = self.ocr.classification(png) or ""
-        return alnum_only(raw)[:8]
+    @staticmethod
+    def _variants(png: bytes) -> list[bytes]:
+        out: list[bytes] = [png]
+        try:
+            img = Image.open(io.BytesIO(png)).convert("RGB")
+            w, h = img.size
+            up = img.resize((w * 2, h * 2), Image.LANCZOS)
+            gray = ImageOps.grayscale(up)
+            # threshold + slight sharpen — helps ddddocr lock characters
+            threshed = gray.point(lambda p: 0 if p < 140 else 255).filter(
+                ImageFilter.SHARPEN
+            )
+            for candidate in (up, gray, threshed):
+                buf = io.BytesIO()
+                candidate.convert("RGB").save(buf, format="PNG")
+                out.append(buf.getvalue())
+        except Exception:
+            pass
+        return out
+
+    def _guesses(self, png: bytes) -> list[str]:
+        seen: list[str] = []
+        for variant in self._variants(png):
+            for model in (self.ocr, self.ocr_beta):
+                if not model:
+                    continue
+                try:
+                    raw = model.classification(variant) or ""
+                except Exception:
+                    raw = ""
+                code = alnum_only(raw)[:8]
+                if code and code not in seen:
+                    seen.append(code)
+        return seen
+
+    def guesses(self, png: bytes) -> list[str]:
+        guesses = self._guesses(png)
+        # Sort by likely length first (GST captcha is usually 6 chars)
+        guesses.sort(key=lambda g: (abs(len(g) - 6), -len(g)))
+        return guesses
 
 
 def parse_gst_field(body: str, label: str) -> str | None:
@@ -185,14 +229,32 @@ def parse_gst_field(body: str, label: str) -> str | None:
     return None
 
 
-def refresh_gst_captcha(page) -> None:
+def _captcha_hash(page) -> str:
     try:
-        page.locator("button").filter(has=page.locator("i.fa-refresh")).first.click()
+        return hashlib.md5(page.locator("#imgCaptcha").screenshot()).hexdigest()
     except Exception:
+        return ""
+
+
+def refresh_gst_captcha(page, prev_hash: str = "") -> str:
+    for _ in range(3):
         try:
-            page.locator("#imgCaptcha").click()
+            page.locator("button").filter(has=page.locator("i.fa-refresh")).first.click(
+                force=True
+            )
         except Exception:
-            pass
+            try:
+                page.locator("#imgCaptcha").click(force=True)
+            except Exception:
+                pass
+        # Wait for a NEW captcha image (different bytes)
+        for _ in range(20):
+            time.sleep(0.15)
+            h = _captcha_hash(page)
+            if h and h != prev_hash:
+                return h
+        prev_hash = _captcha_hash(page)
+    return prev_hash
 
 
 def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
@@ -209,13 +271,19 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
         page.locator("#ifARN").check(force=True)
         page.locator("#arnp").fill(arn)
         page.locator("#imgCaptcha").wait_for(state="visible", timeout=20000)
+        time.sleep(0.6)
 
-        for attempt in range(1, 11):
-            code = solver.ocr_image(page.locator("#imgCaptcha").screenshot())
-            print(f"GST captcha try {attempt}: {code!r}", flush=True)
+        max_attempts = 20
+        current_hash = _captcha_hash(page)
+
+        for attempt in range(1, max_attempts + 1):
+            png = page.locator("#imgCaptcha").screenshot()
+            guesses = solver.guesses(png)
+            code = guesses[0] if guesses else ""
+            print(f"GST captcha try {attempt}: {code!r} (from {guesses})", flush=True)
+
             if not code or len(code) < 4:
-                refresh_gst_captcha(page)
-                time.sleep(1.0)
+                current_hash = refresh_gst_captcha(page, current_hash)
                 continue
 
             page.locator("#arnp").fill(arn)
@@ -223,11 +291,6 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
             page.locator("#arnpreSearch").click()
             time.sleep(2.5)
             body = page.locator("body").inner_text()
-
-            if re.search(r"invalid\s+captcha|please\s+enter\s+valid\s+captcha", body, re.I):
-                refresh_gst_captcha(page)
-                time.sleep(1.0)
-                continue
 
             if (
                 "Search Result based on ARN" in body
@@ -240,22 +303,18 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
                 form_no = parse_gst_field(body, r"Form No\.?")
                 form_desc = parse_gst_field(body, "Form Description")
                 submission = parse_gst_field(body, "Submission Date")
-                if not (status or form_no or submission):
-                    refresh_gst_captcha(page)
-                    time.sleep(1.0)
-                    continue
-                return {
-                    "arn": arn,
-                    "status": status or "(status not visible)",
-                    "form_no": form_no,
-                    "form_desc": form_desc,
-                    "submission": submission,
-                }
+                if status or form_no or submission:
+                    return {
+                        "arn": arn,
+                        "status": status or "(status not visible)",
+                        "form_no": form_no,
+                        "form_desc": form_desc,
+                        "submission": submission,
+                    }
 
-            refresh_gst_captcha(page)
-            time.sleep(1.0)
+            current_hash = refresh_gst_captcha(page, current_hash)
 
-        raise RuntimeError("Could not solve GST captcha after 10 tries")
+        raise RuntimeError("Could not solve GST captcha")
     finally:
         context.close()
 
