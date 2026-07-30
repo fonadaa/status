@@ -1,6 +1,9 @@
 /**
  * Status Desk API + static UI
  *   npm start → http://localhost:3000
+ *
+ * Checks run in the background so Render's short HTTP timeout
+ * does not kill the Playwright job (client polls /api/last).
  */
 
 require("dotenv").config({ quiet: true });
@@ -9,7 +12,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-30-clean";
+const VERSION = "2026-07-30-async";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
 const IS_CLOUD = Boolean(
@@ -25,7 +28,7 @@ const HEADLESS = (() => {
 
 const ALLOWED_ORIGINS = (
   process.env.CORS_ORIGINS ||
-  "*,https://dolly.vercel.app,https://status-desk.vercel.app,http://localhost:3000,http://127.0.0.1:3000"
+  "*,https://dolly.vercel.app,https://dolly-status.vercel.app,https://status-desk.vercel.app,http://localhost:3000,http://127.0.0.1:3000"
 )
   .split(",")
   .map((s) => s.trim())
@@ -158,6 +161,28 @@ function runStatusCheck(overrides = {}) {
   });
 }
 
+function startCheckJob(overrides) {
+  busy = true;
+  progress = ["Starting status check…"];
+  runStatusCheck(overrides)
+    .then((result) => {
+      lastResult = { ...result, checkedAt: new Date().toISOString() };
+      pushProgress("Done.");
+    })
+    .catch((err) => {
+      const message = err.message || "Status check failed";
+      lastResult = {
+        ok: false,
+        error: message,
+        checkedAt: new Date().toISOString(),
+      };
+      pushProgress(`Failed: ${message}`);
+    })
+    .finally(() => {
+      busy = false;
+    });
+}
+
 function contentType(filePath) {
   switch (path.extname(filePath).toLowerCase()) {
     case ".html":
@@ -200,6 +225,7 @@ const server = http.createServer(async (req, res) => {
         version: VERSION,
         headless: HEADLESS,
         python: PYTHON,
+        busy,
       });
     }
     if (req.method === "GET" && pathname === "/api/last") {
@@ -210,6 +236,7 @@ const server = http.createServer(async (req, res) => {
         busy,
         progress,
         latest: progress[progress.length - 1] || "",
+        result: busy ? null : lastResult,
       });
     }
     if (req.method === "GET" && pathname === "/favicon.ico") {
@@ -223,6 +250,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 409, {
           ok: false,
           error: "A check is already running.",
+          busy: true,
         });
       }
       let overrides = {};
@@ -232,21 +260,13 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 400, { ok: false, error: err.message });
       }
 
-      busy = true;
-      progress = ["Starting status check…"];
-      try {
-        const result = await runStatusCheck(overrides);
-        lastResult = { ...result, checkedAt: new Date().toISOString() };
-        pushProgress("Done.");
-        return sendJson(req, res, 200, lastResult);
-      } catch (err) {
-        const message = err.message || "Status check failed";
-        lastResult = { ok: false, error: message, checkedAt: new Date().toISOString() };
-        pushProgress(`Failed: ${message}`);
-        return sendJson(req, res, 500, lastResult);
-      } finally {
-        busy = false;
-      }
+      // Return immediately — Render free tier times out long requests (~30–100s)
+      startCheckJob(overrides);
+      return sendJson(req, res, 202, {
+        ok: true,
+        started: true,
+        message: "Check started. Poll /api/progress or /api/last.",
+      });
     }
 
     const filePath = normalizePath(pathname === "/" ? "/index.html" : pathname).replace(
