@@ -214,19 +214,59 @@ class CaptchaSolver:
         return guesses
 
 
+GST_FIELD_BLACKLIST = {
+    "-",
+    "search",
+    "back",
+    "close",
+    "home",
+    "track application status",
+    "track return status",
+    "track payment status",
+    "logout",
+    "help",
+}
+
+KNOWN_GST_STATUSES = [
+    "Pending for Processing",
+    "Pending for Order",
+    "Pending for Clarification",
+    "Clarification filed - Pending for Order",
+    "Approved",
+    "Rejected",
+    "Migrated",
+    "Cancelled",
+    "Provisional",
+    "Withdrawn",
+    "Validation Error",
+]
+
+
 def parse_gst_field(body: str, label: str) -> str | None:
+    # Anchor label at line start so "Track Application Status" is never matched
+    anchor = r"(?:^|\n)\s*"
     patterns = [
-        rf"{label}\s*[:：]?\s*\t\s*([^\n]+)",
-        rf"{label}\s*[:：]\s*([^\n]+)",
-        rf"{label}\s*\n\s*([^\n]+)",
+        rf"{anchor}{label}\s*[:：]?\s*\t+\s*([^\n\t]+)",
+        rf"{anchor}{label}\s*[:：]\s*([^\n]+)",
+        rf"{anchor}{label}\s*\n\s*([^\n]+)",
     ]
     for pat in patterns:
-        m = re.search(pat, body, re.I)
-        if m:
-            value = re.sub(r"\s+", " ", m.group(1)).strip()
-            if value and value.lower() not in {label.lower(), "-"}:
-                return value
+        for m in re.finditer(pat, body, re.I):
+            value = re.sub(r"\s+", " ", m.group(1)).strip().strip("|:")
+            if not value:
+                continue
+            low = value.lower()
+            if low == label.lower() or low in GST_FIELD_BLACKLIST:
+                continue
+            return value
     return None
+
+
+def detect_gst_status(body: str) -> str | None:
+    for name in KNOWN_GST_STATUSES:
+        if re.search(rf"\b{re.escape(name)}\b", body, re.I):
+            return name
+    return parse_gst_field(body, "Status")
 
 
 def _captcha_hash(page) -> str:
@@ -292,25 +332,33 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
             time.sleep(2.5)
             body = page.locator("body").inner_text()
 
-            if (
+            status = detect_gst_status(body)
+            form_no = parse_gst_field(body, r"Form No\.?")
+            form_desc = parse_gst_field(body, "Form Description")
+            submission = parse_gst_field(
+                body, r"(?:Date of Submission|Submission Date)"
+            )
+            has_known_status = any(
+                s.lower() in body.lower() for s in KNOWN_GST_STATUSES
+            )
+            result_visible = (
                 "Search Result based on ARN" in body
-                or "Pending for Processing" in body
-                or parse_gst_field(body, "Status")
-            ):
-                status = parse_gst_field(body, "Status") or (
-                    "Pending for Processing" if "Pending for Processing" in body else None
-                )
-                form_no = parse_gst_field(body, r"Form No\.?")
-                form_desc = parse_gst_field(body, "Form Description")
-                submission = parse_gst_field(body, "Submission Date")
-                if status or form_no or submission:
-                    return {
-                        "arn": arn,
-                        "status": status or "(status not visible)",
-                        "form_no": form_no,
-                        "form_desc": form_desc,
-                        "submission": submission,
-                    }
+                or has_known_status
+                or (status and (form_no or submission))
+            )
+            print(
+                f"GST parsed: status={status!r} form_no={form_no!r} "
+                f"submission={submission!r} known={has_known_status}",
+                flush=True,
+            )
+            if result_visible and status:
+                return {
+                    "arn": arn,
+                    "status": status,
+                    "form_no": form_no,
+                    "form_desc": form_desc,
+                    "submission": submission,
+                }
 
             current_hash = refresh_gst_captcha(page, current_hash)
 
