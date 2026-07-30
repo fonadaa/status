@@ -16,6 +16,8 @@ const gstError = document.getElementById("gstError");
 const passportBlock = document.getElementById("passportBlock");
 const passportFields = document.getElementById("passportFields");
 const passportError = document.getElementById("passportError");
+const passportCheckbox = document.getElementById("passportCheckbox");
+if (passportCheckbox) passportCheckbox.checked = cfg.withPassport === true;
 
 let pollTimer = null;
 let pollInFlight = false;
@@ -25,13 +27,18 @@ function apiUrl(path) {
   return `${API()}${path}`;
 }
 
+function withPassportEnabled() {
+  if (passportCheckbox) return passportCheckbox.checked === true;
+  return cfg.withPassport === true;
+}
+
 function payload() {
   return {
     gstArn: cfg.gstArn || "",
     passportUser: cfg.passportUser || "",
     passportPass: cfg.passportPass || "",
     passportFileNo: cfg.passportFileNo || "",
-    withPassport: cfg.withPassport !== false, // default: run both
+    withPassport: withPassportEnabled(),
   };
 }
 

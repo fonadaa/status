@@ -87,32 +87,95 @@ def launch_browser(playwright, headless: bool):
     )
 
 
+PASSPORT_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en-US', 'en'] });
+Object.defineProperty(navigator, 'plugins', {
+  get: () => [1, 2, 3, 4, 5].map(() => ({ name: 'plugin', filename: 'internal' })),
+});
+window.chrome = window.chrome || { runtime: {} };
+const origQuery = window.navigator.permissions && window.navigator.permissions.query;
+if (origQuery) {
+  window.navigator.permissions.query = (parameters) => (
+    parameters && parameters.name === 'notifications'
+      ? Promise.resolve({ state: Notification.permission })
+      : origQuery(parameters)
+  );
+}
+"""
+
+
+REALISTIC_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
+
+
 def check_passport(browser, username: str, password: str, file_no: str) -> dict:
     print("Passport: signing in…", flush=True)
     context = browser.new_context(
-        viewport={"width": 800, "height": 600},
+        viewport={"width": 1280, "height": 800},
+        user_agent=REALISTIC_UA,
+        locale="en-IN",
+        timezone_id="Asia/Kolkata",
         ignore_https_errors=True,
     )
+    context.add_init_script(PASSPORT_STEALTH_JS)
     page = context.new_page()
     page.set_default_timeout(45000)
 
     try:
-        page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_selector('input[type="password"]', timeout=45000)
+        page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
+        try:
+            page.wait_for_selector('input[type="password"]', timeout=45000)
+        except Exception:
+            # Sometimes login UI is inside iframe/lazy — try one more time
+            page.wait_for_load_state("networkidle", timeout=15000)
+            page.wait_for_selector('input[type="password"]', timeout=15000)
         # Prefer password login if OTP / Password tabs exist
         for label in ("Password", "Login with Password"):
             tab = page.get_by_text(label, exact=True)
             if tab.count():
-                try:
-                    tab.first.click(force=True)
-                    time.sleep(0.3)
-                except Exception:
-                    pass
+                for i in range(min(tab.count(), 3)):
+                    try:
+                        tab.nth(i).click(force=True)
+                        time.sleep(0.4)
+                        break
+                    except Exception:
+                        continue
                 break
         page.locator('input[type="text"]').first.fill(username)
         page.locator('input[type="password"]').first.fill(password)
-        click_exact(page, "Sign In")
-        page.wait_for_url(re.compile(r"Home|homeScreen", re.I), timeout=60000)
+
+        clicked = False
+        for locator in (
+            page.locator('div[tabindex="0"]').filter(
+                has_text=re.compile(r"^\s*Sign\s*In\s*$", re.I)
+            ),
+            page.get_by_role("button", name=re.compile(r"^\s*Sign\s*In\s*$", re.I)),
+            page.locator("button, input[type=submit]").filter(
+                has_text=re.compile(r"Sign\s*In", re.I)
+            ),
+        ):
+            try:
+                if locator.count():
+                    locator.first.click(force=True)
+                    clicked = True
+                    break
+            except Exception:
+                continue
+        if not clicked:
+            page.get_by_text("Sign In", exact=True).first.click(force=True)
+
+        try:
+            page.wait_for_url(re.compile(r"Home|homeScreen", re.I), timeout=45000)
+        except Exception:
+            body = page.locator("body").inner_text()
+            if re.search(r"invalid\s+(?:captcha|user\s*id|password)", body, re.I):
+                raise RuntimeError("Passport site rejected the login credentials/captcha.")
+            if re.search(r"captcha", body, re.I):
+                raise RuntimeError("Passport login requires captcha (headless mode blocked).")
+            raise RuntimeError("Passport login did not complete (site blocked headless login).")
         page.wait_for_function(
             "() => /Submitted Applications|Welcome back/i.test(document.body.innerText)",
             timeout=45000,
@@ -446,8 +509,13 @@ def run_status_check(headless: bool = False, gst_only: bool = True) -> dict:
                 try:
                     passport = check_passport(browser, username, password, file_no)
                 except Exception as exc:
-                    passport = {"error": str(exc) or "Passport check failed"}
-                    print(f"Passport failed: {passport['error']}", flush=True)
+                    raw = str(exc) or "Passport check failed"
+                    # Trim Playwright's verbose "===logs===" section
+                    friendly = raw.split("\n")[0].strip()
+                    if "Timeout" in friendly and "exceeded" in friendly:
+                        friendly = "Passport site blocked headless login (bot detection)."
+                    passport = {"error": friendly}
+                    print(f"Passport failed: {friendly}", flush=True)
                 finally:
                     browser.close()
                     gc.collect()

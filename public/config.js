@@ -6,6 +6,9 @@ window.STATUS_CONFIG = {
   passportPass: "Mpasspw@01",
   passportFileNo: "LKN067803930926",
   gstArn: "AA090726251099S",
+  // Passport Seva blocks headless logins from the cloud API;
+  // keep this off unless you flip the toggle in the UI.
+  withPassport: false,
 };
 
 window.STATUS_API = window.STATUS_CONFIG.apiUrl || "";
