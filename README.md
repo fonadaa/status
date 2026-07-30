@@ -20,7 +20,7 @@ CLI only: `npm run check` or `python check_status.py`.
 
 | Layer | Host | Notes |
 |-------|------|--------|
-| UI | [Vercel](https://status-desk.vercel.app) | static `public/` |
+| UI | [Vercel](https://dolly.vercel.app) | static `public/` |
 | API | [Render](https://status-hle5.onrender.com) | Docker (`Dockerfile`) |
 
 Set `apiUrl` in `public/config.js` to your Render URL. Playwright cannot run on Vercel.

@@ -25,7 +25,7 @@ const HEADLESS = (() => {
 
 const ALLOWED_ORIGINS = (
   process.env.CORS_ORIGINS ||
-  "*,https://status-desk.vercel.app,http://localhost:3000,http://127.0.0.1:3000"
+  "*,https://dolly.vercel.app,https://status-desk.vercel.app,http://localhost:3000,http://127.0.0.1:3000"
 )
   .split(",")
   .map((s) => s.trim())
