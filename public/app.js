@@ -142,10 +142,21 @@ async function readJson(res) {
   }
 }
 
-function waitForResult() {
+function postCheck(body) {
+  return fetch(apiUrl("/api/check"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(readJson);
+}
+
+function waitForResult(body) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const maxMs = 6 * 60 * 1000;
+    let restartRetries = 0;
+    let sawBusy = false;
+    let idleSince = 0;
     live.hidden = false;
 
     const tick = async () => {
@@ -159,6 +170,37 @@ function waitForResult() {
         }
         const data = await readJson(await fetch(apiUrl("/api/progress")));
         if (data.latest) live.textContent = data.latest;
+        if (data.busy) {
+          sawBusy = true;
+          idleSince = 0;
+        } else if (!data.result) {
+          // Server thinks it isn't running, but we have no result.
+          // Likely Render restarted the process mid-check. Retry the POST.
+          idleSince = idleSince || Date.now();
+          const idleFor = Date.now() - idleSince;
+          if (idleFor > 15000 && restartRetries < 2) {
+            restartRetries++;
+            idleSince = 0;
+            sawBusy = false;
+            live.textContent =
+              restartRetries === 1
+                ? "Server restarted, retrying…"
+                : "Retrying once more…";
+            try {
+              await postCheck(body);
+            } catch (_) {
+              /* keep polling */
+            }
+          } else if (idleFor > 40000 && restartRetries >= 2) {
+            stopPolling();
+            reject(
+              new Error(
+                "Server keeps restarting (Render free tier memory limit). Try again shortly."
+              )
+            );
+            return;
+          }
+        }
         if (!data.busy && data.result) {
           stopPolling();
           if (data.result.ok === false) {
@@ -195,20 +237,15 @@ async function checkStatus() {
   live.textContent = "Starting…";
 
   try {
-    const res = await fetch(apiUrl("/api/check"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const started = await readJson(res);
-    if (!res.ok || started.ok === false) {
+    const started = await postCheck(body);
+    if (started.ok === false) {
       throw new Error(started.error || "Could not start check");
     }
     live.textContent = started.alreadyRunning
       ? "Already checking… joining"
       : "Checking…";
 
-    showResult(await waitForResult());
+    showResult(await waitForResult(body));
     live.textContent = "Done";
     setTimeout(() => {
       live.hidden = true;

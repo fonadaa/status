@@ -31,6 +31,8 @@ CHROME_ARGS = [
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--no-sandbox",
+    "--single-process",
+    "--no-zygote",
     "--disable-extensions",
     "--disable-background-networking",
     "--disable-default-apps",
@@ -39,7 +41,7 @@ CHROME_ARGS = [
     "--mute-audio",
     "--no-first-run",
     "--renderer-process-limit=1",
-    "--disable-features=TranslateUI,BlinkGenPropertyTrees",
+    "--disable-features=TranslateUI,BlinkGenPropertyTrees,IsolateOrigins,site-per-process",
     "--js-flags=--max-old-space-size=96",
 ]
 
@@ -88,7 +90,7 @@ def launch_browser(playwright, headless: bool):
 def check_passport(browser, username: str, password: str, file_no: str) -> dict:
     print("Passport: signing in…", flush=True)
     context = browser.new_context(
-        viewport={"width": 1024, "height": 720},
+        viewport={"width": 800, "height": 600},
         ignore_https_errors=True,
     )
     page = context.new_page()
@@ -162,15 +164,22 @@ def check_passport(browser, username: str, password: str, file_no: str) -> dict:
 
 
 class CaptchaSolver:
-    """Two OCR models + PIL preprocessing — still light on RAM."""
+    """One OCR model by default; beta lazily loaded on repeated failures."""
 
     def __init__(self) -> None:
         print("Loading OCR…", flush=True)
         self.ocr = ddddocr.DdddOcr(show_ad=False)
+        self.ocr_beta = None  # lazy — heavy for 512MB Render
+
+    def _ensure_beta(self) -> None:
+        if self.ocr_beta is not None:
+            return
         try:
+            print("Loading OCR beta model…", flush=True)
             self.ocr_beta = ddddocr.DdddOcr(show_ad=False, beta=True)
-        except Exception:
-            self.ocr_beta = None
+        except Exception as exc:
+            print(f"OCR beta unavailable: {exc}", flush=True)
+            self.ocr_beta = False  # do not retry
 
     @staticmethod
     def _variants(png: bytes) -> list[bytes]:
@@ -180,7 +189,6 @@ class CaptchaSolver:
             w, h = img.size
             up = img.resize((w * 2, h * 2), Image.LANCZOS)
             gray = ImageOps.grayscale(up)
-            # threshold + slight sharpen — helps ddddocr lock characters
             threshed = gray.point(lambda p: 0 if p < 140 else 255).filter(
                 ImageFilter.SHARPEN
             )
@@ -192,12 +200,16 @@ class CaptchaSolver:
             pass
         return out
 
-    def _guesses(self, png: bytes) -> list[str]:
+    def guesses(self, png: bytes, use_beta: bool = False) -> list[str]:
+        if use_beta:
+            self._ensure_beta()
         seen: list[str] = []
-        for variant in self._variants(png):
-            for model in (self.ocr, self.ocr_beta):
-                if not model:
-                    continue
+        models = [self.ocr]
+        if use_beta and self.ocr_beta and self.ocr_beta is not False:
+            models.append(self.ocr_beta)
+        variants = self._variants(png) if use_beta else [png]
+        for variant in variants:
+            for model in models:
                 try:
                     raw = model.classification(variant) or ""
                 except Exception:
@@ -205,13 +217,8 @@ class CaptchaSolver:
                 code = alnum_only(raw)[:8]
                 if code and code not in seen:
                     seen.append(code)
+        seen.sort(key=lambda g: (abs(len(g) - 6), -len(g)))
         return seen
-
-    def guesses(self, png: bytes) -> list[str]:
-        guesses = self._guesses(png)
-        # Sort by likely length first (GST captcha is usually 6 chars)
-        guesses.sort(key=lambda g: (abs(len(g) - 6), -len(g)))
-        return guesses
 
 
 GST_FIELD_BLACKLIST = {
@@ -300,9 +307,28 @@ def refresh_gst_captcha(page, prev_hash: str = "") -> str:
 def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
     print("GST: opening ARN page…", flush=True)
     context = browser.new_context(
-        viewport={"width": 1024, "height": 720},
+        viewport={"width": 800, "height": 600},
         ignore_https_errors=True,
+        java_script_enabled=True,
     )
+    # Block heavy third-party fonts / trackers to save memory & time
+    def _route(route):
+        try:
+            r = route.request
+            url = r.url
+            rtype = r.resource_type
+            if rtype in ("font", "media"):
+                return route.abort()
+            if "google-analytics" in url or "googletagmanager" in url or "gstatic" in url:
+                return route.abort()
+            return route.continue_()
+        except Exception:
+            try:
+                route.continue_()
+            except Exception:
+                pass
+
+    context.route("**/*", _route)
     page = context.new_page()
     page.set_default_timeout(45000)
 
@@ -318,7 +344,7 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
 
         for attempt in range(1, max_attempts + 1):
             png = page.locator("#imgCaptcha").screenshot()
-            guesses = solver.guesses(png)
+            guesses = solver.guesses(png, use_beta=attempt >= 4)
             code = guesses[0] if guesses else ""
             print(f"GST captcha try {attempt}: {code!r} (from {guesses})", flush=True)
 
