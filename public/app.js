@@ -1,16 +1,14 @@
 const cfg = window.STATUS_CONFIG || {};
 const API = () => String(window.STATUS_API || cfg.apiUrl || "").replace(/\/$/, "");
-const POLL_MS = 5000; // one call every 5s while checking — not spam
+const POLL_MS = 8000; // light: 1 request every 8s while checking
 
 const checkBtn = document.getElementById("checkBtn");
 const live = document.getElementById("live");
 const panel = document.getElementById("panel");
 const errorEl = document.getElementById("error");
 const stamp = document.getElementById("stamp");
-const passportFields = document.getElementById("passportFields");
 const gstFields = document.getElementById("gstFields");
 const gstBlock = document.getElementById("gstBlock");
-const passportBlock = document.getElementById("passportBlock");
 
 let pollTimer = null;
 let pollInFlight = false;
@@ -21,10 +19,10 @@ function apiUrl(path) {
 
 function payload() {
   return {
+    gstArn: cfg.gstArn || "",
     passportUser: cfg.passportUser || "",
     passportPass: cfg.passportPass || "",
     passportFileNo: cfg.passportFileNo || "",
-    gstArn: cfg.gstArn || "",
   };
 }
 
@@ -45,13 +43,11 @@ function showError(message) {
 }
 
 function showResult(data) {
-  const p = data.passport || {};
   const g = data.gst || {};
-  if (!g.status && !p.application_status) return;
+  if (!g.status) return;
 
   errorEl.hidden = true;
   panel.hidden = false;
-  passportFields.replaceChildren();
   gstFields.replaceChildren();
 
   row(gstFields, "ARN", g.arn);
@@ -60,11 +56,6 @@ function showResult(data) {
   row(gstFields, "Submission date", g.submission);
   row(gstFields, "Status", g.status, true);
   gstBlock.hidden = !gstFields.children.length;
-
-  row(passportFields, "File number", p.file_number);
-  row(passportFields, "Payment", p.payment_status);
-  row(passportFields, "Status", p.application_status, true);
-  passportBlock.hidden = !passportFields.children.length;
 
   stamp.textContent = data.checkedAt
     ? `Updated ${new Date(data.checkedAt).toLocaleString()}`
@@ -91,7 +82,7 @@ async function readJson(res) {
 function waitForResult() {
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const maxMs = 8 * 60 * 1000;
+    const maxMs = 6 * 60 * 1000;
     live.hidden = false;
 
     const tick = async () => {
@@ -103,10 +94,8 @@ function waitForResult() {
           reject(new Error("Timed out. Try again."));
           return;
         }
-
         const data = await readJson(await fetch(apiUrl("/api/progress")));
         if (data.latest) live.textContent = data.latest;
-
         if (!data.busy && data.result) {
           stopPolling();
           if (data.result.ok === false) {
@@ -116,23 +105,21 @@ function waitForResult() {
           resolve(data.result);
         }
       } catch (_) {
-        if (Date.now() - started > 20000) {
-          live.textContent = "Waiting for server…";
-        }
+        if (Date.now() - started > 20000) live.textContent = "Waiting for server…";
       } finally {
         pollInFlight = false;
       }
     };
 
-    tick(); // first check soon after start
+    tick();
     pollTimer = setInterval(tick, POLL_MS);
   });
 }
 
 async function checkStatus() {
   const body = payload();
-  if (!body.passportUser || !body.passportPass || !body.passportFileNo || !body.gstArn) {
-    showError("Missing credentials in config.js");
+  if (!body.gstArn) {
+    showError("Missing GST ARN in config.js");
     return;
   }
 
@@ -154,11 +141,10 @@ async function checkStatus() {
     } else if (!res.ok || started.ok === false) {
       throw new Error(started.error || "Could not start check");
     } else {
-      live.textContent = "Checking…";
+      live.textContent = "Checking GST…";
     }
 
-    const result = await waitForResult();
-    showResult(result);
+    showResult(await waitForResult());
     live.textContent = "Done";
   } catch (err) {
     showError(err.message || "Something went wrong");
@@ -170,4 +156,3 @@ async function checkStatus() {
 }
 
 checkBtn.addEventListener("click", checkStatus);
-// No API calls on page load — only when you tap the button.

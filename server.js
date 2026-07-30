@@ -12,7 +12,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-30-async";
+const VERSION = "2026-07-30-lite";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
 const IS_CLOUD = Boolean(
@@ -107,14 +107,21 @@ function readBody(req) {
 
 function runStatusCheck(overrides = {}) {
   return new Promise((resolve, reject) => {
-    const args = [path.join(__dirname, "check_status.py"), "--json"];
+    const args = [path.join(__dirname, "check_status.py"), "--json", "--gst-only"];
     if (HEADLESS) args.push("--headless");
+    // Optional full check if explicitly requested
+    if (overrides.withPassport === true) {
+      const i = args.indexOf("--gst-only");
+      if (i >= 0) args.splice(i, 1);
+      args.push("--with-passport");
+    }
 
     const child = spawn(PYTHON, args, {
       cwd: __dirname,
       env: {
         ...process.env,
         PYTHONUNBUFFERED: "1",
+        PYTHONDONTWRITEBYTECODE: "1",
         PASSPORT_USER: overrides.passportUser || process.env.PASSPORT_USER || "",
         PASSPORT_PASS: overrides.passportPass || process.env.PASSPORT_PASS || "",
         PASSPORT_FILE_NO: overrides.passportFileNo || process.env.PASSPORT_FILE_NO || "",
