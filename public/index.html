@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0a4d3c" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Status Desk</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fraunces:opsz,wght@9..144,500;9..144,600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./config.js"></script>
+  </head>
+  <body>
+    <div class="bg" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="brand">
+        <p class="mark">Status Desk</p>
+        <h1>Passport &amp; GST</h1>
+        <p class="lede">Tap once. Live status from both portals.</p>
+      </header>
+
+      <section class="action">
+        <button id="checkBtn" type="button">Check status</button>
+        <p id="hint" class="hint">Usually takes 1–2 minutes.</p>
+        <p id="live" class="live" hidden></p>
+      </section>
+
+      <section id="panel" class="panel" hidden>
+        <p class="meta"><span id="stamp"></span></p>
+        <div class="grid">
+          <article class="block">
+            <div class="block-head">
+              <h2>Passport</h2>
+              <span class="chip">Seva</span>
+            </div>
+            <dl id="passportFields"></dl>
+          </article>
+          <article class="block">
+            <div class="block-head">
+              <h2>GST</h2>
+              <span class="chip">ARN</span>
+            </div>
+            <dl id="gstFields"></dl>
+          </article>
+        </div>
+      </section>
+
+      <section id="error" class="error" hidden></section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "name": "passport-status-checker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "check-status.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "python check_status.py",
+    "ui": "node server.js",
+    "start:js": "node check-status.js",
+    "whatsapp": "node whatsapp-bot.js",
+    "telegram": "node telegram-bot.js",
+    "vercel-build": "node -e \"console.log('static public/')\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "playwright": "^1.62.0",
+    "qrcode-terminal": "^0.12.0",
+    "sharp": "^0.35.3",
+    "tesseract.js": "^7.0.0",
+    "whatsapp-web.js": "^1.34.7"
+  },
+  "allowScripts": {
+    "puppeteer@24.38.0": true,
+    "tesseract.js@7.0.0": true
+  }
+}

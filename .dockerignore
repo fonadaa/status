@@ -1,0 +1,14 @@
+node_modules
+.wwebjs_auth
+.wwebjs_cache
+.env
+*.log
+captcha-*
+debug-*.png
+*.png
+*.mp3
+*.wav
+*.bin
+eng.traineddata
+.git
+agent-transcripts

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: status-desk-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: CHECK_HEADLESS
+        value: "true"
+      - key: CORS_ORIGINS
+        sync: false
+      - key: PASSPORT_USER
+        sync: false
+      - key: PASSPORT_PASS
+        sync: false
+      - key: PASSPORT_FILE_NO
+        sync: false
+      - key: GST_ARN
+        sync: false
