@@ -12,9 +12,10 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-30-gst1";
+const VERSION = "2026-07-30-gst2";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
+const JOB_MAX_MS = Number(process.env.JOB_MAX_MS || 5 * 60 * 1000);
 const IS_CLOUD = Boolean(
   process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.FLY_APP_NAME
 );
@@ -37,6 +38,25 @@ const ALLOWED_ORIGINS = (
 let busy = false;
 let lastResult = null;
 let progress = [];
+let jobChild = null;
+let jobStartedAt = 0;
+let jobTimer = null;
+let jobId = 0;
+
+function clearJobTimer() {
+  if (jobTimer) {
+    clearTimeout(jobTimer);
+    jobTimer = null;
+  }
+}
+
+function markIdle(id) {
+  if (id != null && id !== jobId) return;
+  busy = false;
+  jobChild = null;
+  jobStartedAt = 0;
+  clearJobTimer();
+}
 
 function resolvePython() {
   if (process.env.PYTHON_PATH) return process.env.PYTHON_PATH;
@@ -129,8 +149,16 @@ function runStatusCheck(overrides = {}) {
       },
       windowsHide: HEADLESS,
     });
+    jobChild = child;
 
     let stdout = "";
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+
     child.stdout.on("data", (d) => {
       const s = d.toString();
       stdout += s;
@@ -141,8 +169,11 @@ function runStatusCheck(overrides = {}) {
     child.stderr.on("data", (d) => {
       for (const line of d.toString().split(/\r?\n/)) pushProgress(line);
     });
-    child.on("error", reject);
-    child.on("close", (code) => {
+    child.on("error", (err) => finish(reject, err));
+    child.on("close", (code, signal) => {
+      if (signal) {
+        return finish(reject, new Error(`Status check stopped (${signal})`));
+      }
       const jsonLine = stdout
         .split(/\r?\n/)
         .map((l) => l.trim())
@@ -150,7 +181,8 @@ function runStatusCheck(overrides = {}) {
         .reverse()
         .find((l) => l.startsWith("{") && l.endsWith("}"));
       if (!jsonLine) {
-        return reject(
+        return finish(
+          reject,
           new Error(
             progress.slice(-5).join(" | ") ||
               `Status check failed (exit ${code}) with no JSON output`
@@ -159,25 +191,48 @@ function runStatusCheck(overrides = {}) {
       }
       try {
         const data = JSON.parse(jsonLine);
-        if (!data.ok) return reject(new Error(data.error || "Status check failed"));
-        resolve(data);
+        if (!data.ok) return finish(reject, new Error(data.error || "Status check failed"));
+        finish(resolve, data);
       } catch (err) {
-        reject(new Error(`Could not parse status JSON: ${err.message}`));
+        finish(reject, new Error(`Could not parse status JSON: ${err.message}`));
       }
     });
   });
 }
 
 function startCheckJob(overrides) {
+  const id = ++jobId;
   busy = true;
+  jobStartedAt = Date.now();
   progress = ["Starting status check…"];
+  clearJobTimer();
+  jobTimer = setTimeout(() => {
+    if (id !== jobId || !busy) return;
+    pushProgress("Timed out — stopping stuck check…");
+    try {
+      if (jobChild && !jobChild.killed) jobChild.kill("SIGKILL");
+    } catch (_) {
+      /* ignore */
+    }
+    lastResult = {
+      ok: false,
+      error: "Check timed out. Tap GST status again.",
+      checkedAt: new Date().toISOString(),
+    };
+    markIdle(id);
+  }, JOB_MAX_MS);
+
   runStatusCheck(overrides)
     .then((result) => {
+      if (id !== jobId) return;
       lastResult = { ...result, checkedAt: new Date().toISOString() };
       pushProgress("Done.");
     })
     .catch((err) => {
+      if (id !== jobId) return;
       const message = err.message || "Status check failed";
+      // Timeout already wrote a clearer message
+      if (lastResult && /timed out/i.test(String(lastResult.error || ""))) return;
       lastResult = {
         ok: false,
         error: message,
@@ -186,7 +241,7 @@ function startCheckJob(overrides) {
       pushProgress(`Failed: ${message}`);
     })
     .finally(() => {
-      busy = false;
+      markIdle(id);
     });
 }
 
@@ -253,18 +308,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && pathname === "/api/check") {
-      if (busy) {
-        return sendJson(req, res, 409, {
-          ok: false,
-          error: "A check is already running.",
-          busy: true,
-        });
-      }
       let overrides = {};
       try {
         overrides = await readBody(req);
       } catch (err) {
         return sendJson(req, res, 400, { ok: false, error: err.message });
+      }
+
+      // Soft-join: never 409 — second tap just watches the running job
+      if (busy) {
+        return sendJson(req, res, 202, {
+          ok: true,
+          started: false,
+          alreadyRunning: true,
+          busy: true,
+          message: "Check already running. Poll /api/progress.",
+          ageMs: jobStartedAt ? Date.now() - jobStartedAt : 0,
+        });
       }
 
       // Return immediately — Render free tier times out long requests (~30–100s)

@@ -3,6 +3,7 @@ const API = () => String(window.STATUS_API || cfg.apiUrl || "").replace(/\/$/, "
 const POLL_MS = 8000; // light: 1 request every 8s while checking
 
 const checkBtn = document.getElementById("checkBtn");
+const btnLabel = checkBtn.querySelector(".btn-label") || checkBtn;
 const live = document.getElementById("live");
 const panel = document.getElementById("panel");
 const errorEl = document.getElementById("error");
@@ -12,6 +13,7 @@ const gstBlock = document.getElementById("gstBlock");
 
 let pollTimer = null;
 let pollInFlight = false;
+let checking = false;
 
 function apiUrl(path) {
   return `${API()}${path}`;
@@ -24,6 +26,12 @@ function payload() {
     passportPass: cfg.passportPass || "",
     passportFileNo: cfg.passportFileNo || "",
   };
+}
+
+function setBusyUi(on, label) {
+  checking = on;
+  checkBtn.disabled = on;
+  btnLabel.textContent = on ? label || "Checking…" : "GST status";
 }
 
 function row(dl, label, value, isStatus = false) {
@@ -117,13 +125,15 @@ function waitForResult() {
 }
 
 async function checkStatus() {
+  if (checking) return;
+
   const body = payload();
   if (!body.gstArn) {
     showError("Missing GST ARN in config.js");
     return;
   }
 
-  checkBtn.disabled = true;
+  setBusyUi(true, "Checking…");
   errorEl.hidden = true;
   panel.hidden = true;
   live.hidden = false;
@@ -136,13 +146,12 @@ async function checkStatus() {
       body: JSON.stringify(body),
     });
     const started = await readJson(res);
-    if (res.status === 409 || (started && started.busy)) {
-      live.textContent = "Already running…";
-    } else if (!res.ok || started.ok === false) {
+    if (!res.ok || started.ok === false) {
       throw new Error(started.error || "Could not start check");
-    } else {
-      live.textContent = "Checking GST…";
     }
+    live.textContent = started.alreadyRunning
+      ? "Already checking… joining"
+      : "Checking GST…";
 
     showResult(await waitForResult());
     live.textContent = "Done";
@@ -151,7 +160,7 @@ async function checkStatus() {
     live.hidden = true;
   } finally {
     stopPolling();
-    checkBtn.disabled = false;
+    setBusyUi(false);
   }
 }
 
