@@ -1,6 +1,6 @@
 const cfg = window.STATUS_CONFIG || {};
 const API = () => String(window.STATUS_API || cfg.apiUrl || "").replace(/\/$/, "");
-const POLL_MS = 8000;
+const POLL_MS = 3500;
 
 const checkBtn = document.getElementById("checkBtn");
 const btnLabel = checkBtn.querySelector(".btn-label") || checkBtn;

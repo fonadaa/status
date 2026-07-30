@@ -12,10 +12,10 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-30-lite3";
+const VERSION = "2026-07-30-fast1";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
-const JOB_MAX_MS = Number(process.env.JOB_MAX_MS || 5 * 60 * 1000);
+const JOB_MAX_MS = Number(process.env.JOB_MAX_MS || 3 * 60 * 1000);
 const IS_CLOUD = Boolean(
   process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.FLY_APP_NAME
 );
