@@ -1,15 +1,13 @@
-# Playwright + Node API (cannot run on Vercel — use Render/Railway/Fly)
-# bump: 2026-07-30-nowhisper — optional whisper; image OCR on cloud
+# API + Playwright checker for Render/Railway (not Vercel)
 FROM mcr.microsoft.com/playwright/python:v1.51.0-noble
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    nodejs npm ffmpeg \
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-cloud.txt ./requirements-cloud.txt
-RUN pip install --no-cache-dir -r requirements-cloud.txt \
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
     && playwright install chromium
 
 COPY package.json package-lock.json ./

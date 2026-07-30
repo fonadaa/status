@@ -1,6 +1,0 @@
-playwright>=1.40.0
-python-dotenv>=1.0.0
-ddddocr>=1.5.0
-opencv-python-headless>=4.8.0
-numpy>=1.26.0
-onnxruntime==1.19.2

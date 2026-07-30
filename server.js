@@ -1,8 +1,6 @@
 /**
- * Local / cloud status UI + API
- *   npm start  →  http://localhost:3000
- *
- * Cloud: Docker on Render. Frontend may be on Vercel.
+ * Status Desk API + static UI
+ *   npm start → http://localhost:3000
  */
 
 require("dotenv").config({ quiet: true });
@@ -11,31 +9,24 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-30-nowhisper";
+const VERSION = "2026-07-30-clean";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
 const IS_CLOUD = Boolean(
   process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.FLY_APP_NAME
 );
 
-function resolveHeadless() {
+const HEADLESS = (() => {
   const raw = String(process.env.CHECK_HEADLESS || "").toLowerCase();
   if (raw === "true") return true;
   if (raw === "false") return false;
   return IS_CLOUD || process.platform === "linux";
-}
+})();
 
-const HEADLESS = resolveHeadless();
-
-const DEFAULT_ORIGINS = [
-  "*",
-  "https://status-desk.vercel.app",
-  "https://status-desk-mjxi49kdm-devs-projects-b6bc0bb4.vercel.app",
-  "http://localhost:3000",
-  "http://127.0.0.1:3000",
-];
-
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || DEFAULT_ORIGINS.join(","))
+const ALLOWED_ORIGINS = (
+  process.env.CORS_ORIGINS ||
+  "*,https://status-desk.vercel.app,http://localhost:3000,http://127.0.0.1:3000"
+)
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -47,8 +38,7 @@ let progress = [];
 function resolvePython() {
   if (process.env.PYTHON_PATH) return process.env.PYTHON_PATH;
   for (const cmd of ["python", "python3", "py"]) {
-    const check = spawnSync(cmd, ["--version"], { encoding: "utf8" });
-    if (check.status === 0) return cmd;
+    if (spawnSync(cmd, ["--version"], { encoding: "utf8" }).status === 0) return cmd;
   }
   return "python";
 }
@@ -58,15 +48,13 @@ const PYTHON = resolvePython();
 function pickOrigin(req) {
   const origin = req.headers.origin || "";
   if (!origin) return "*";
-  if (ALLOWED_ORIGINS.includes("*")) return origin; // reflect for credential-less preflight reliability
-  if (ALLOWED_ORIGINS.includes(origin)) return origin;
+  if (ALLOWED_ORIGINS.includes("*") || ALLOWED_ORIGINS.includes(origin)) return origin;
   if (/\.vercel\.app$/i.test(origin)) return origin;
-  return ALLOWED_ORIGINS.find((o) => o !== "*") || "*";
+  return "*";
 }
 
 function applyCors(req, res) {
-  const allowOrigin = pickOrigin(req);
-  res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+  res.setHeader("Access-Control-Allow-Origin", pickOrigin(req));
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader(
     "Access-Control-Allow-Headers",
@@ -79,15 +67,13 @@ function applyCors(req, res) {
 
 function sendJson(req, res, status, body) {
   applyCors(req, res);
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
 }
 
-function sendText(req, res, status, body, type = "text/plain") {
+function sendText(req, res, status, body, type) {
   applyCors(req, res);
-  res.statusCode = status;
-  res.setHeader("Content-Type", `${type}; charset=utf-8`);
+  res.writeHead(status, { "Content-Type": `${type}; charset=utf-8` });
   res.end(body);
 }
 
@@ -96,7 +82,7 @@ function pushProgress(line) {
   if (!text) return;
   progress.push(text);
   if (progress.length > 80) progress = progress.slice(-80);
-  process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
+  process.stdout.write(`${text}\n`);
 }
 
 function readBody(req) {
@@ -118,8 +104,7 @@ function readBody(req) {
 
 function runStatusCheck(overrides = {}) {
   return new Promise((resolve, reject) => {
-    const script = path.join(__dirname, "check_status.py");
-    const args = [script, "--json"];
+    const args = [path.join(__dirname, "check_status.py"), "--json"];
     if (HEADLESS) args.push("--headless");
 
     const child = spawn(PYTHON, args, {
@@ -140,8 +125,7 @@ function runStatusCheck(overrides = {}) {
       const s = d.toString();
       stdout += s;
       for (const line of s.split(/\r?\n/)) {
-        if (line.trim().startsWith("{")) continue;
-        pushProgress(line);
+        if (!line.trim().startsWith("{")) pushProgress(line);
       }
     });
     child.stderr.on("data", (d) => {
@@ -155,22 +139,17 @@ function runStatusCheck(overrides = {}) {
         .filter(Boolean)
         .reverse()
         .find((l) => l.startsWith("{") && l.endsWith("}"));
-
       if (!jsonLine) {
-        reject(
+        return reject(
           new Error(
             progress.slice(-5).join(" | ") ||
               `Status check failed (exit ${code}) with no JSON output`
           )
         );
-        return;
       }
       try {
         const data = JSON.parse(jsonLine);
-        if (!data.ok) {
-          reject(new Error(data.error || "Status check failed"));
-          return;
-        }
+        if (!data.ok) return reject(new Error(data.error || "Status check failed"));
         resolve(data);
       } catch (err) {
         reject(new Error(`Could not parse status JSON: ${err.message}`));
@@ -180,37 +159,40 @@ function runStatusCheck(overrides = {}) {
 }
 
 function contentType(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  if (ext === ".html") return "text/html";
-  if (ext === ".css") return "text/css";
-  if (ext === ".js") return "application/javascript";
-  if (ext === ".svg") return "image/svg+xml";
-  if (ext === ".ico") return "image/x-icon";
-  return "application/octet-stream";
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".html":
+      return "text/html";
+    case ".css":
+      return "text/css";
+    case ".js":
+      return "application/javascript";
+    case ".svg":
+      return "image/svg+xml";
+    case ".ico":
+      return "image/x-icon";
+    default:
+      return "application/octet-stream";
+  }
 }
 
 function normalizePath(pathname) {
   if (!pathname) return "/";
-  // trim trailing slash except root
-  if (pathname.length > 1 && pathname.endsWith("/")) return pathname.slice(0, -1);
-  return pathname;
+  return pathname.length > 1 && pathname.endsWith("/")
+    ? pathname.slice(0, -1)
+    : pathname;
 }
 
 const server = http.createServer(async (req, res) => {
   try {
-    // Always answer preflight first (before anything else)
     if (req.method === "OPTIONS") {
       applyCors(req, res);
-      res.statusCode = 204;
-      res.end();
-      return;
+      res.writeHead(204);
+      return res.end();
     }
 
-    const host = req.headers.host || "localhost";
-    const url = new URL(req.url || "/", `http://${host}`);
-    const pathname = normalizePath(url.pathname);
-
-    console.log(`[${VERSION}] ${req.method} ${pathname}`);
+    const pathname = normalizePath(
+      new URL(req.url || "/", `http://${req.headers.host || "localhost"}`).pathname
+    );
 
     if (req.method === "GET" && pathname === "/api/health") {
       return sendJson(req, res, 200, {
@@ -220,11 +202,9 @@ const server = http.createServer(async (req, res) => {
         python: PYTHON,
       });
     }
-
     if (req.method === "GET" && pathname === "/api/last") {
       return sendJson(req, res, 200, { busy, result: lastResult, progress });
     }
-
     if (req.method === "GET" && pathname === "/api/progress") {
       return sendJson(req, res, 200, {
         busy,
@@ -232,12 +212,10 @@ const server = http.createServer(async (req, res) => {
         latest: progress[progress.length - 1] || "",
       });
     }
-
     if (req.method === "GET" && pathname === "/favicon.ico") {
       applyCors(req, res);
-      res.statusCode = 204;
-      res.end();
-      return;
+      res.writeHead(204);
+      return res.end();
     }
 
     if (req.method === "POST" && pathname === "/api/check") {
@@ -253,6 +231,7 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         return sendJson(req, res, 400, { ok: false, error: err.message });
       }
+
       busy = true;
       progress = ["Starting status check…"];
       try {
@@ -262,11 +241,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 200, lastResult);
       } catch (err) {
         const message = err.message || "Status check failed";
-        lastResult = {
-          ok: false,
-          error: message,
-          checkedAt: new Date().toISOString(),
-        };
+        lastResult = { ok: false, error: message, checkedAt: new Date().toISOString() };
         pushProgress(`Failed: ${message}`);
         return sendJson(req, res, 500, lastResult);
       } finally {
@@ -274,32 +249,18 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    let filePath = pathname === "/" ? "/index.html" : pathname;
-    filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
+    const filePath = normalizePath(pathname === "/" ? "/index.html" : pathname).replace(
+      /^(\.\.[/\\])+/,
+      ""
+    );
     const abs = path.join(PUBLIC, filePath);
-
     if (!abs.startsWith(PUBLIC) || !fs.existsSync(abs) || fs.statSync(abs).isDirectory()) {
-      return sendJson(req, res, 404, {
-        ok: false,
-        error: "Not found",
-        path: pathname,
-        version: VERSION,
-      });
+      return sendJson(req, res, 404, { ok: false, error: "Not found", path: pathname });
     }
-
     return sendText(req, res, 200, fs.readFileSync(abs, "utf8"), contentType(abs));
   } catch (err) {
     console.error("Request error:", err);
-    try {
-      return sendJson(req, res, 500, {
-        ok: false,
-        error: err.message || "Server error",
-        version: VERSION,
-      });
-    } catch (_) {
-      res.statusCode = 500;
-      res.end("error");
-    }
+    return sendJson(req, res, 500, { ok: false, error: err.message || "Server error" });
   }
 });
 
@@ -310,15 +271,12 @@ server.keepAliveTimeout = 120000;
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
-    console.error(`\nPort ${PORT} is already in use.\n`);
+    console.error(`Port ${PORT} already in use`);
     process.exit(1);
   }
   throw err;
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`\n[${VERSION}] Status UI/API on 0.0.0.0:${PORT}`);
-  console.log(`Python: ${PYTHON}`);
-  console.log(HEADLESS ? "Mode: headless" : "Mode: visible browser");
-  console.log("CORS origins:", ALLOWED_ORIGINS.join(", "));
+  console.log(`[${VERSION}] http://localhost:${PORT}  python=${PYTHON}  headless=${HEADLESS}`);
 });

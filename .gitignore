@@ -1,6 +1,15 @@
 node_modules/
 .env
 *.log
+.vercel/
 .wwebjs_auth/
 .wwebjs_cache/
-.vercel/
+__pycache__/
+*.pyc
+captcha-*
+debug-*.png
+error.png
+*.mp3
+*.wav
+*.bin
+eng.traineddata
