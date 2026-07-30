@@ -1,6 +1,6 @@
 const cfg = window.STATUS_CONFIG || {};
 const API = () => String(window.STATUS_API || cfg.apiUrl || "").replace(/\/$/, "");
-const POLL_MS = 8000; // light: 1 request every 8s while checking
+const POLL_MS = 8000;
 
 const checkBtn = document.getElementById("checkBtn");
 const btnLabel = checkBtn.querySelector(".btn-label") || checkBtn;
@@ -8,8 +8,14 @@ const live = document.getElementById("live");
 const panel = document.getElementById("panel");
 const errorEl = document.getElementById("error");
 const stamp = document.getElementById("stamp");
-const gstFields = document.getElementById("gstFields");
+
 const gstBlock = document.getElementById("gstBlock");
+const gstFields = document.getElementById("gstFields");
+const gstError = document.getElementById("gstError");
+
+const passportBlock = document.getElementById("passportBlock");
+const passportFields = document.getElementById("passportFields");
+const passportError = document.getElementById("passportError");
 
 let pollTimer = null;
 let pollInFlight = false;
@@ -25,13 +31,14 @@ function payload() {
     passportUser: cfg.passportUser || "",
     passportPass: cfg.passportPass || "",
     passportFileNo: cfg.passportFileNo || "",
+    withPassport: cfg.withPassport !== false, // default: run both
   };
 }
 
 function setBusyUi(on, label) {
   checking = on;
   checkBtn.disabled = on;
-  btnLabel.textContent = on ? label || "Checking…" : "GST status";
+  btnLabel.textContent = on ? label || "Checking…" : "Check status";
 }
 
 function row(dl, label, value, isStatus = false) {
@@ -50,24 +57,72 @@ function showError(message) {
   errorEl.textContent = message;
 }
 
-function showResult(data) {
-  const g = data.gst || {};
-  if (!g.status) return;
+function renderGst(g) {
+  gstFields.replaceChildren();
+  gstError.hidden = true;
+  gstError.textContent = "";
 
+  if (!g) {
+    gstBlock.hidden = true;
+    return false;
+  }
+
+  if (g.arn) row(gstFields, "ARN", g.arn);
+  if (g.form_no) row(gstFields, "Form no.", g.form_no);
+  if (g.form_desc) row(gstFields, "Form description", g.form_desc);
+  if (g.submission) row(gstFields, "Submission date", g.submission);
+  if (g.status) row(gstFields, "Status", g.status, true);
+
+  if (g.error) {
+    gstError.hidden = false;
+    gstError.textContent = `Could not read GST: ${g.error}`;
+  }
+
+  const hasContent = gstFields.children.length > 0 || !gstError.hidden;
+  gstBlock.hidden = !hasContent;
+  return hasContent;
+}
+
+function renderPassport(p) {
+  passportFields.replaceChildren();
+  passportError.hidden = true;
+  passportError.textContent = "";
+
+  if (!p) {
+    passportBlock.hidden = true;
+    return false;
+  }
+
+  if (p.file_number) row(passportFields, "File number", p.file_number);
+  if (p.payment_status) row(passportFields, "Payment", p.payment_status);
+  if (p.application_status) row(passportFields, "Status", p.application_status, true);
+
+  if (p.error) {
+    passportError.hidden = false;
+    passportError.textContent = `Could not read Passport: ${p.error}`;
+  }
+
+  const hasContent = passportFields.children.length > 0 || !passportError.hidden;
+  passportBlock.hidden = !hasContent;
+  return hasContent;
+}
+
+function showResult(data) {
+  console.log("Status result:", data);
   errorEl.hidden = true;
   panel.hidden = false;
-  gstFields.replaceChildren();
 
-  row(gstFields, "ARN", g.arn);
-  row(gstFields, "Form no.", g.form_no);
-  row(gstFields, "Form description", g.form_desc);
-  row(gstFields, "Submission date", g.submission);
-  row(gstFields, "Status", g.status, true);
-  gstBlock.hidden = !gstFields.children.length;
+  const hasGst = renderGst(data && data.gst);
+  const hasPassport = renderPassport(data && data.passport);
 
-  stamp.textContent = data.checkedAt
+  stamp.textContent = data && data.checkedAt
     ? `Updated ${new Date(data.checkedAt).toLocaleString()}`
     : "";
+
+  if (!hasGst && !hasPassport) {
+    panel.hidden = true;
+    showError("No status returned. Try again in a minute.");
+  }
 }
 
 function stopPolling() {
@@ -151,10 +206,13 @@ async function checkStatus() {
     }
     live.textContent = started.alreadyRunning
       ? "Already checking… joining"
-      : "Checking GST…";
+      : "Checking…";
 
     showResult(await waitForResult());
     live.textContent = "Done";
+    setTimeout(() => {
+      live.hidden = true;
+    }, 1500);
   } catch (err) {
     showError(err.message || "Something went wrong");
     live.hidden = true;

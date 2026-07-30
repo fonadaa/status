@@ -49,6 +49,10 @@ def digits_only(text: str) -> str:
     return re.sub(r"\D", "", text or "")
 
 
+def alnum_only(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", text or "")
+
+
 def value_after_label(body: str, label: str) -> str | None:
     m = re.search(
         rf"{label}\s*\n\s*-\s*\n\s*([\s\S]*?)(?=\n\s*[A-Z][A-Za-z /()]+\s*\n\s*-\s*\n|\n\s*Close\b|\n\s*Home\b|$)",
@@ -162,17 +166,33 @@ class CaptchaSolver:
         self.ocr = ddddocr.DdddOcr(show_ad=False)
 
     def ocr_image(self, png: bytes) -> str:
-        code = digits_only(self.ocr.classification(png))
-        if len(code) >= 5:
-            return code[:6]
-        return code
+        raw = self.ocr.classification(png) or ""
+        return alnum_only(raw)[:8]
 
 
 def parse_gst_field(body: str, label: str) -> str | None:
-    m = re.search(rf"{label}\s*[:：]?\s*\t\s*([^\n]+)", body, re.I) or re.search(
-        rf"{label}\s*[:：]\s*([^\n]+)", body, re.I
-    )
-    return re.sub(r"\s+", " ", m.group(1)).strip() if m else None
+    patterns = [
+        rf"{label}\s*[:：]?\s*\t\s*([^\n]+)",
+        rf"{label}\s*[:：]\s*([^\n]+)",
+        rf"{label}\s*\n\s*([^\n]+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, body, re.I)
+        if m:
+            value = re.sub(r"\s+", " ", m.group(1)).strip()
+            if value and value.lower() not in {label.lower(), "-"}:
+                return value
+    return None
+
+
+def refresh_gst_captcha(page) -> None:
+    try:
+        page.locator("button").filter(has=page.locator("i.fa-refresh")).first.click()
+    except Exception:
+        try:
+            page.locator("#imgCaptcha").click()
+        except Exception:
+            pass
 
 
 def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
@@ -190,38 +210,52 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
         page.locator("#arnp").fill(arn)
         page.locator("#imgCaptcha").wait_for(state="visible", timeout=20000)
 
-        for attempt in range(1, 7):
+        for attempt in range(1, 11):
             code = solver.ocr_image(page.locator("#imgCaptcha").screenshot())
             print(f"GST captcha try {attempt}: {code!r}", flush=True)
-            if not code:
-                page.locator("button").filter(has=page.locator("i.fa-refresh")).click()
-                time.sleep(0.8)
+            if not code or len(code) < 4:
+                refresh_gst_captcha(page)
+                time.sleep(1.0)
                 continue
 
             page.locator("#arnp").fill(arn)
             page.locator("#fo-captcha").fill(code)
             page.locator("#arnpreSearch").click()
-            time.sleep(2.2)
+            time.sleep(2.5)
             body = page.locator("body").inner_text()
 
-            if "Search Result based on ARN" in body or "Pending for Processing" in body:
+            if re.search(r"invalid\s+captcha|please\s+enter\s+valid\s+captcha", body, re.I):
+                refresh_gst_captcha(page)
+                time.sleep(1.0)
+                continue
+
+            if (
+                "Search Result based on ARN" in body
+                or "Pending for Processing" in body
+                or parse_gst_field(body, "Status")
+            ):
                 status = parse_gst_field(body, "Status") or (
                     "Pending for Processing" if "Pending for Processing" in body else None
                 )
-                if not status:
-                    raise RuntimeError("GST Status not found")
+                form_no = parse_gst_field(body, r"Form No\.?")
+                form_desc = parse_gst_field(body, "Form Description")
+                submission = parse_gst_field(body, "Submission Date")
+                if not (status or form_no or submission):
+                    refresh_gst_captcha(page)
+                    time.sleep(1.0)
+                    continue
                 return {
                     "arn": arn,
-                    "status": status,
-                    "form_no": parse_gst_field(body, r"Form No\.?"),
-                    "form_desc": parse_gst_field(body, "Form Description"),
-                    "submission": parse_gst_field(body, "Submission Date"),
+                    "status": status or "(status not visible)",
+                    "form_no": form_no,
+                    "form_desc": form_desc,
+                    "submission": submission,
                 }
 
-            page.locator("button").filter(has=page.locator("i.fa-refresh")).click()
-            time.sleep(0.8)
+            refresh_gst_captcha(page)
+            time.sleep(1.0)
 
-        raise RuntimeError("Could not solve GST captcha")
+        raise RuntimeError("Could not solve GST captcha after 10 tries")
     finally:
         context.close()
 
@@ -229,22 +263,28 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
 def format_status_message(passport: dict | None, gst: dict | None) -> str:
     lines = ["========== STATUS =========="]
     if passport:
-        lines += [
-            "PASSPORT",
-            f"  File: {passport.get('file_number') or '-'}",
-            f"  Payment: {passport.get('payment_status')}",
-            f"  Status: {passport.get('application_status')}",
-        ]
+        lines.append("PASSPORT")
+        if passport.get("error"):
+            lines.append(f"  Error: {passport['error']}")
+        else:
+            lines += [
+                f"  File: {passport.get('file_number') or '-'}",
+                f"  Payment: {passport.get('payment_status')}",
+                f"  Status: {passport.get('application_status')}",
+            ]
     if gst:
         if passport:
             lines.append("")
-        lines += [
-            "GST",
-            f"  ARN: {gst.get('arn')}",
-            f"  Form: {gst.get('form_no') or '-'}",
-            f"  Submitted: {gst.get('submission') or '-'}",
-            f"  Status: {gst.get('status')}",
-        ]
+        lines.append("GST")
+        if gst.get("error"):
+            lines += [f"  ARN: {gst.get('arn') or '-'}", f"  Error: {gst['error']}"]
+        else:
+            lines += [
+                f"  ARN: {gst.get('arn')}",
+                f"  Form: {gst.get('form_no') or '-'}",
+                f"  Submitted: {gst.get('submission') or '-'}",
+                f"  Status: {gst.get('status')}",
+            ]
     lines.append("============================")
     return "\n".join(lines)
 
@@ -257,30 +297,42 @@ def run_status_check(headless: bool = False, gst_only: bool = True) -> dict:
 
     if not arn:
         raise RuntimeError("Missing GST_ARN")
-    if not gst_only and not all([username, password, file_no]):
-        raise RuntimeError("Missing passport credentials")
 
     solver = CaptchaSolver()
     passport = None
     gst = None
+    gst_error = None
 
     with sync_playwright() as p:
         # One browser at a time — frees RAM between steps
         if not gst_only:
-            browser = launch_browser(p, headless)
-            try:
-                passport = check_passport(browser, username, password, file_no)
-            finally:
-                browser.close()
-                gc.collect()
+            if not all([username, password, file_no]):
+                passport = {"error": "Missing passport credentials"}
+            else:
+                browser = launch_browser(p, headless)
+                try:
+                    passport = check_passport(browser, username, password, file_no)
+                except Exception as exc:
+                    passport = {"error": str(exc) or "Passport check failed"}
+                    print(f"Passport failed: {passport['error']}", flush=True)
+                finally:
+                    browser.close()
+                    gc.collect()
 
         browser = launch_browser(p, headless)
         try:
             gst = check_gst(browser, solver, arn)
+        except Exception as exc:
+            gst_error = str(exc) or "GST check failed"
+            print(f"GST failed: {gst_error}", flush=True)
         finally:
             browser.close()
             gc.collect()
 
+    if gst is None and passport is None:
+        raise RuntimeError(gst_error or "No status returned")
+    if gst is None:
+        gst = {"arn": arn, "error": gst_error or "GST check failed"}
     return {"passport": passport, "gst": gst}
 
 
