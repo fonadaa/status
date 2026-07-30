@@ -12,7 +12,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-30-fast2";
+const VERSION = "2026-07-30-fast3";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
 const JOB_MAX_MS = Number(process.env.JOB_MAX_MS || 3 * 60 * 1000);
@@ -104,7 +104,7 @@ function pushProgress(line) {
   const text = String(line || "").trim();
   if (!text) return;
   progress.push(text);
-  if (progress.length > 80) progress = progress.slice(-80);
+  if (progress.length > 32) progress = progress.slice(-32);
   process.stdout.write(`${text}\n`);
 }
 

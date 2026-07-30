@@ -27,21 +27,22 @@ GST_URL = "https://services.gst.gov.in/services/arnstatus"
 
 # Low-RAM Chromium flags for 512MB Render instances
 CHROME_ARGS = [
+    "--headless=old",
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--no-sandbox",
-    "--single-process",
-    "--no-zygote",
     "--disable-extensions",
     "--disable-background-networking",
+    "--disable-background-timer-throttling",
     "--disable-default-apps",
     "--disable-sync",
     "--disable-translate",
+    "--disable-notifications",
     "--mute-audio",
     "--no-first-run",
     "--renderer-process-limit=1",
     "--disable-features=TranslateUI,BlinkGenPropertyTrees,IsolateOrigins,site-per-process",
-    "--js-flags=--max-old-space-size=96",
+    "--js-flags=--max-old-space-size=80",
 ]
 
 
@@ -341,12 +342,32 @@ OUTCOME_JS = (
 )
 
 
+def _gst_route(route):
+    try:
+        r = route.request
+        rt = r.resource_type
+        url = r.url.lower()
+        if rt == "font" or rt == "media":
+            return route.abort()
+        if rt == "image" and "captcha" not in url:
+            return route.abort()
+        if "google-analytics" in url or "googletagmanager" in url or "doubleclick" in url:
+            return route.abort()
+        return route.continue_()
+    except Exception:
+        try:
+            route.continue_()
+        except Exception:
+            pass
+
+
 def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
     print("GST: opening ARN page…", flush=True)
     context = browser.new_context(
-        viewport={"width": 800, "height": 600},
+        viewport={"width": 640, "height": 480},
         ignore_https_errors=True,
     )
+    context.route("**/*", _gst_route)
     page = context.new_page()
     page.set_default_timeout(20000)
 
@@ -359,6 +380,8 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
         for attempt in range(1, 13):
             png = page.locator("#imgCaptcha").screenshot()
             code = solver.guess(png)
+            del png  # release bytes ASAP on 512MB Render
+            gc.collect()
             print(f"GST try {attempt}: {code!r}", flush=True)
 
             if not code or len(code) < 4:
