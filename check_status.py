@@ -226,7 +226,7 @@ def check_passport(browser, username: str, password: str, file_no: str) -> dict:
 
 
 class CaptchaSolver:
-    """Fast single-model solver with one PIL pass — light on RAM and CPU."""
+    """Fast solver: raw OCR + one preprocessed pass; picks the ~6-char guess."""
 
     def __init__(self) -> None:
         print("Loading OCR…", flush=True)
@@ -238,20 +238,30 @@ class CaptchaSolver:
             img = Image.open(io.BytesIO(png)).convert("L")
             w, h = img.size
             img = img.resize((w * 2, h * 2), Image.LANCZOS)
-            img = img.point(lambda p: 0 if p < 140 else 255)
             buf = io.BytesIO()
             img.convert("RGB").save(buf, format="PNG")
             return buf.getvalue()
         except Exception:
             return png
 
-    def guess(self, png: bytes) -> str:
-        pre = self._preprocess(png)
+    def _ocr(self, data: bytes) -> str:
         try:
-            raw = self.ocr.classification(pre) or ""
+            raw = self.ocr.classification(data) or ""
         except Exception:
             raw = ""
         return alnum_only(raw)[:8]
+
+    def guess(self, png: bytes) -> str:
+        candidates: list[str] = []
+        for data in (png, self._preprocess(png)):
+            code = self._ocr(data)
+            if code and code not in candidates:
+                candidates.append(code)
+        if not candidates:
+            return ""
+        # Prefer 6-char, then 5-char, then longest
+        candidates.sort(key=lambda g: (abs(len(g) - 6), -len(g)))
+        return candidates[0]
 
 
 GST_FIELD_BLACKLIST = {
