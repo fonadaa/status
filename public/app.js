@@ -1,5 +1,6 @@
 const cfg = window.STATUS_CONFIG || {};
 const API = () => String(window.STATUS_API || cfg.apiUrl || "").replace(/\/$/, "");
+const POLL_MS = 5000; // one call every 5s while checking — not spam
 
 const checkBtn = document.getElementById("checkBtn");
 const live = document.getElementById("live");
@@ -12,6 +13,7 @@ const gstBlock = document.getElementById("gstBlock");
 const passportBlock = document.getElementById("passportBlock");
 
 let pollTimer = null;
+let pollInFlight = false;
 
 function apiUrl(path) {
   return `${API()}${path}`;
@@ -74,6 +76,7 @@ function stopPolling() {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+  pollInFlight = false;
 }
 
 async function readJson(res) {
@@ -89,15 +92,15 @@ function waitForResult() {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const maxMs = 8 * 60 * 1000;
-
-    stopPolling();
     live.hidden = false;
 
-    pollTimer = setInterval(async () => {
+    const tick = async () => {
+      if (pollInFlight) return;
+      pollInFlight = true;
       try {
         if (Date.now() - started > maxMs) {
           stopPolling();
-          reject(new Error("Timed out waiting for status. Try again."));
+          reject(new Error("Timed out. Try again."));
           return;
         }
 
@@ -112,13 +115,17 @@ function waitForResult() {
           }
           resolve(data.result);
         }
-      } catch (err) {
-        // Keep polling through brief Render wake-ups
-        if (Date.now() - started > 45000 && !live.textContent) {
+      } catch (_) {
+        if (Date.now() - started > 20000) {
           live.textContent = "Waiting for server…";
         }
+      } finally {
+        pollInFlight = false;
       }
-    }, 1200);
+    };
+
+    tick(); // first check soon after start
+    pollTimer = setInterval(tick, POLL_MS);
   });
 }
 
@@ -146,6 +153,8 @@ async function checkStatus() {
       live.textContent = "Already running…";
     } else if (!res.ok || started.ok === false) {
       throw new Error(started.error || "Could not start check");
+    } else {
+      live.textContent = "Checking…";
     }
 
     const result = await waitForResult();
@@ -161,24 +170,4 @@ async function checkStatus() {
 }
 
 checkBtn.addEventListener("click", checkStatus);
-
-fetch(apiUrl("/api/last"))
-  .then((r) => readJson(r))
-  .then((data) => {
-    if (data.result && data.result.ok) showResult(data.result);
-    if (data.busy) {
-      checkBtn.disabled = true;
-      live.hidden = false;
-      live.textContent = "Checking…";
-      waitForResult()
-        .then((result) => {
-          showResult(result);
-          live.textContent = "Done";
-        })
-        .catch((err) => showError(err.message))
-        .finally(() => {
-          checkBtn.disabled = false;
-        });
-    }
-  })
-  .catch(() => {});
+// No API calls on page load — only when you tap the button.

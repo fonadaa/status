@@ -20,7 +20,9 @@ CLI only: `npm run check` or `python check_status.py`.
 
 | Layer | Host | Notes |
 |-------|------|--------|
-| UI | [Vercel](https://dolly-status.vercel.app) | static `public/` (project name: `dolly`) |
+| UI | [Vercel](https://dolly-status.vercel.app) / [status-desk](https://status-desk.vercel.app) | static `public/` |
+
+> `dolly.vercel.app` is already taken by another (broken) Vercel project. Delete that project in the account that owns it, then we can attach this app to `https://dolly.vercel.app`.
 | API | [Render](https://status-hle5.onrender.com) | Docker (`Dockerfile`) |
 
 Set `apiUrl` in `public/config.js` to your Render URL. Playwright cannot run on Vercel.
