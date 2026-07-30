@@ -1,4 +1,5 @@
 # Playwright + Node API (cannot run on Vercel — use Render/Railway/Fly)
+# bump: 2026-07-30-cors2 — force clean image rebuild
 FROM mcr.microsoft.com/playwright/python:v1.51.0-noble
 
 WORKDIR /app

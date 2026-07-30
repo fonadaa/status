@@ -2,8 +2,7 @@
  * Local / cloud status UI + API
  *   npm start  →  http://localhost:3000
  *
- * Cloud note: Playwright cannot run on Vercel.
- * Deploy this server (Docker) to Render/Railway; host public/ on Vercel.
+ * Cloud: Docker on Render. Frontend may be on Vercel.
  */
 
 require("dotenv").config({ quiet: true });
@@ -12,6 +11,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
+const VERSION = "2026-07-30-cors2";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
 const IS_CLOUD = Boolean(
@@ -22,16 +22,20 @@ function resolveHeadless() {
   const raw = String(process.env.CHECK_HEADLESS || "").toLowerCase();
   if (raw === "true") return true;
   if (raw === "false") return false;
-  // Local Windows/mac: visible browser. Cloud/Linux servers: headless.
   return IS_CLOUD || process.platform === "linux";
 }
 
 const HEADLESS = resolveHeadless();
 
-const ALLOWED_ORIGINS = (
-  process.env.CORS_ORIGINS ||
-  "*,https://status-desk.vercel.app,http://localhost:3000"
-)
+const DEFAULT_ORIGINS = [
+  "*",
+  "https://status-desk.vercel.app",
+  "https://status-desk-mjxi49kdm-devs-projects-b6bc0bb4.vercel.app",
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+];
+
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || DEFAULT_ORIGINS.join(","))
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -51,28 +55,40 @@ function resolvePython() {
 
 const PYTHON = resolvePython();
 
-function corsHeaders(req) {
+function pickOrigin(req) {
   const origin = req.headers.origin || "";
-  const allowAll = ALLOWED_ORIGINS.includes("*");
-  const allowed = allowAll || ALLOWED_ORIGINS.includes(origin);
-  const headers = {
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Cache-Control": "no-store",
-  };
-  if (allowed) {
-    headers["Access-Control-Allow-Origin"] = allowAll ? "*" : origin;
-  }
-  return headers;
+  if (!origin) return "*";
+  if (ALLOWED_ORIGINS.includes("*")) return origin; // reflect for credential-less preflight reliability
+  if (ALLOWED_ORIGINS.includes(origin)) return origin;
+  if (/\.vercel\.app$/i.test(origin)) return origin;
+  return ALLOWED_ORIGINS.find((o) => o !== "*") || "*";
 }
 
-function send(res, req, status, body, type = "application/json") {
-  const data = typeof body === "string" ? body : JSON.stringify(body);
-  res.writeHead(status, {
-    ...corsHeaders(req),
-    "Content-Type": `${type}; charset=utf-8`,
-  });
-  res.end(data);
+function applyCors(req, res) {
+  const allowOrigin = pickOrigin(req);
+  res.setHeader("Access-Control-Allow-Origin", allowOrigin);
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With"
+  );
+  res.setHeader("Access-Control-Max-Age", "86400");
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Cache-Control", "no-store");
+}
+
+function sendJson(req, res, status, body) {
+  applyCors(req, res);
+  res.statusCode = status;
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.end(JSON.stringify(body));
+}
+
+function sendText(req, res, status, body, type = "text/plain") {
+  applyCors(req, res);
+  res.statusCode = status;
+  res.setHeader("Content-Type", `${type}; charset=utf-8`);
+  res.end(body);
 }
 
 function pushProgress(line) {
@@ -92,7 +108,7 @@ function readBody(req) {
       if (!raw) return resolve({});
       try {
         resolve(JSON.parse(raw));
-      } catch (err) {
+      } catch {
         reject(new Error("Invalid JSON body"));
       }
     });
@@ -173,96 +189,136 @@ function contentType(filePath) {
   return "application/octet-stream";
 }
 
+function normalizePath(pathname) {
+  if (!pathname) return "/";
+  // trim trailing slash except root
+  if (pathname.length > 1 && pathname.endsWith("/")) return pathname.slice(0, -1);
+  return pathname;
+}
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-
-  if (req.method === "OPTIONS") {
-    res.writeHead(204, corsHeaders(req));
-    return res.end();
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/health") {
-    return send(res, req, 200, { ok: true, headless: HEADLESS, python: PYTHON });
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/last") {
-    return send(res, req, 200, { busy, result: lastResult, progress });
-  }
-
-  if (req.method === "GET" && url.pathname === "/api/progress") {
-    return send(res, req, 200, {
-      busy,
-      progress,
-      latest: progress[progress.length - 1] || "",
-    });
-  }
-
-  if (req.method === "GET" && url.pathname === "/favicon.ico") {
-    res.writeHead(204, corsHeaders(req));
-    return res.end();
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/check") {
-    if (busy) {
-      return send(res, req, 409, { ok: false, error: "A check is already running." });
+  try {
+    // Always answer preflight first (before anything else)
+    if (req.method === "OPTIONS") {
+      applyCors(req, res);
+      res.statusCode = 204;
+      res.end();
+      return;
     }
-    let overrides = {};
-    try {
-      overrides = await readBody(req);
-    } catch (err) {
-      return send(res, req, 400, { ok: false, error: err.message });
+
+    const host = req.headers.host || "localhost";
+    const url = new URL(req.url || "/", `http://${host}`);
+    const pathname = normalizePath(url.pathname);
+
+    console.log(`[${VERSION}] ${req.method} ${pathname}`);
+
+    if (req.method === "GET" && pathname === "/api/health") {
+      return sendJson(req, res, 200, {
+        ok: true,
+        version: VERSION,
+        headless: HEADLESS,
+        python: PYTHON,
+      });
     }
-    busy = true;
-    progress = ["Starting status check…"];
-    try {
-      const result = await runStatusCheck(overrides);
-      lastResult = { ...result, checkedAt: new Date().toISOString() };
-      pushProgress("Done.");
-      return send(res, req, 200, lastResult);
-    } catch (err) {
-      const message = err.message || "Status check failed";
-      lastResult = {
+
+    if (req.method === "GET" && pathname === "/api/last") {
+      return sendJson(req, res, 200, { busy, result: lastResult, progress });
+    }
+
+    if (req.method === "GET" && pathname === "/api/progress") {
+      return sendJson(req, res, 200, {
+        busy,
+        progress,
+        latest: progress[progress.length - 1] || "",
+      });
+    }
+
+    if (req.method === "GET" && pathname === "/favicon.ico") {
+      applyCors(req, res);
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/check") {
+      if (busy) {
+        return sendJson(req, res, 409, {
+          ok: false,
+          error: "A check is already running.",
+        });
+      }
+      let overrides = {};
+      try {
+        overrides = await readBody(req);
+      } catch (err) {
+        return sendJson(req, res, 400, { ok: false, error: err.message });
+      }
+      busy = true;
+      progress = ["Starting status check…"];
+      try {
+        const result = await runStatusCheck(overrides);
+        lastResult = { ...result, checkedAt: new Date().toISOString() };
+        pushProgress("Done.");
+        return sendJson(req, res, 200, lastResult);
+      } catch (err) {
+        const message = err.message || "Status check failed";
+        lastResult = {
+          ok: false,
+          error: message,
+          checkedAt: new Date().toISOString(),
+        };
+        pushProgress(`Failed: ${message}`);
+        return sendJson(req, res, 500, lastResult);
+      } finally {
+        busy = false;
+      }
+    }
+
+    let filePath = pathname === "/" ? "/index.html" : pathname;
+    filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
+    const abs = path.join(PUBLIC, filePath);
+
+    if (!abs.startsWith(PUBLIC) || !fs.existsSync(abs) || fs.statSync(abs).isDirectory()) {
+      return sendJson(req, res, 404, {
         ok: false,
-        error: message,
-        checkedAt: new Date().toISOString(),
-      };
-      pushProgress(`Failed: ${message}`);
-      return send(res, req, 500, lastResult);
-    } finally {
-      busy = false;
+        error: "Not found",
+        path: pathname,
+        version: VERSION,
+      });
+    }
+
+    return sendText(req, res, 200, fs.readFileSync(abs, "utf8"), contentType(abs));
+  } catch (err) {
+    console.error("Request error:", err);
+    try {
+      return sendJson(req, res, 500, {
+        ok: false,
+        error: err.message || "Server error",
+        version: VERSION,
+      });
+    } catch (_) {
+      res.statusCode = 500;
+      res.end("error");
     }
   }
-
-  let filePath = url.pathname === "/" ? "/index.html" : url.pathname;
-  filePath = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
-  const abs = path.join(PUBLIC, filePath);
-
-  if (!abs.startsWith(PUBLIC) || !fs.existsSync(abs) || fs.statSync(abs).isDirectory()) {
-    return send(res, req, 404, "Not found", "text/plain");
-  }
-
-  return send(res, req, 200, fs.readFileSync(abs, "utf8"), contentType(abs));
 });
 
-// Long-running Playwright checks
 server.requestTimeout = 0;
 server.headersTimeout = 0;
 server.timeout = 0;
+server.keepAliveTimeout = 120000;
 
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
-    console.error(
-      `\nPort ${PORT} is already in use.\n` +
-        `Open http://localhost:${PORT} or stop the other process and retry.\n`
-    );
+    console.error(`\nPort ${PORT} is already in use.\n`);
     process.exit(1);
   }
   throw err;
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`\nStatus UI/API running at http://localhost:${PORT}`);
+  console.log(`\n[${VERSION}] Status UI/API on 0.0.0.0:${PORT}`);
   console.log(`Python: ${PYTHON}`);
   console.log(HEADLESS ? "Mode: headless" : "Mode: visible browser");
-  console.log("Open that link and click Check status.\n");
+  console.log("CORS origins:", ALLOWED_ORIGINS.join(", "));
 });

@@ -1,6 +1,6 @@
 // Hardcoded defaults shown in the UI (edit here anytime)
 window.STATUS_CONFIG = {
-  // Render Docker API (https://github.com/fonadaa/status)
+  // Render Docker API — must match the live service URL
   apiUrl: "https://status-hle5.onrender.com",
   passportUser: "ABHISHEKSHPS@GMAIL.COM",
   passportPass: "Mpasspw@01",
