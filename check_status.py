@@ -90,6 +90,16 @@ def check_passport(browser, username: str, password: str, file_no: str) -> dict:
     try:
         page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_selector('input[type="password"]', timeout=45000)
+        # Prefer password login if OTP / Password tabs exist
+        for label in ("Password", "Login with Password"):
+            tab = page.get_by_text(label, exact=True)
+            if tab.count():
+                try:
+                    tab.first.click(force=True)
+                    time.sleep(0.3)
+                except Exception:
+                    pass
+                break
         page.locator('input[type="text"]').first.fill(username)
         page.locator('input[type="password"]').first.fill(password)
         click_exact(page, "Sign In")
@@ -278,10 +288,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--gst-only", action="store_true", help="Only check GST (lighter RAM)")
+    parser.add_argument("--gst-only", action="store_true", help="Only check GST (default for API)")
     parser.add_argument("--with-passport", action="store_true", help="Also check passport")
     args = parser.parse_args()
-    gst_only = args.gst_only or not args.with_passport
+    # Default: GST only. Passport runs ONLY with explicit --with-passport.
+    gst_only = not args.with_passport
+    print(f"Mode: {'GST only' if gst_only else 'Passport + GST'}", flush=True)
 
     if args.json:
         sys.stdout = sys.stderr

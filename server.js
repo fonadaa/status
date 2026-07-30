@@ -12,7 +12,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-30-lite";
+const VERSION = "2026-07-30-gst1";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
 const IS_CLOUD = Boolean(
@@ -107,14 +107,14 @@ function readBody(req) {
 
 function runStatusCheck(overrides = {}) {
   return new Promise((resolve, reject) => {
+    // UI "GST status" button → GST only (avoids Passport login + saves RAM)
     const args = [path.join(__dirname, "check_status.py"), "--json", "--gst-only"];
     if (HEADLESS) args.push("--headless");
-    // Optional full check if explicitly requested
     if (overrides.withPassport === true) {
-      const i = args.indexOf("--gst-only");
-      if (i >= 0) args.splice(i, 1);
+      args.splice(args.indexOf("--gst-only"), 1);
       args.push("--with-passport");
     }
+    console.log("Spawn:", PYTHON, args.join(" "));
 
     const child = spawn(PYTHON, args, {
       cwd: __dirname,
