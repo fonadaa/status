@@ -27,6 +27,13 @@ from playwright.sync_api import sync_playwright
 load_dotenv()
 
 HAS_FFMPEG = bool(shutil.which("ffmpeg"))
+try:
+    import whisper as _whisper_mod  # optional (heavy); cloud image may omit it
+
+    HAS_WHISPER = True
+except Exception:
+    _whisper_mod = None
+    HAS_WHISPER = False
 
 LOGIN_URL = "https://services1.passportindia.gov.in/forms/login"
 GST_URL = "https://services.gst.gov.in/services/arnstatus"
@@ -211,16 +218,22 @@ def check_passport(browser) -> dict:
 
 class CaptchaSolver:
     def __init__(self):
-        print("Loading captcha models (first run can take a minute)…")
+        print("Loading captcha models (first run can take a minute)…", flush=True)
         self.ocr = ddddocr.DdddOcr(show_ad=False)
         self.ocr_beta = ddddocr.DdddOcr(show_ad=False, beta=True)
         self.whisper = None
-        if HAS_FFMPEG:
-            import whisper
-
-            self.whisper = whisper.load_model("tiny")
+        if HAS_FFMPEG and HAS_WHISPER and _whisper_mod is not None:
+            self.whisper = _whisper_mod.load_model("tiny")
         else:
-            print("ffmpeg not in PATH — audio captcha disabled (image OCR only).")
+            reason = []
+            if not HAS_FFMPEG:
+                reason.append("ffmpeg missing")
+            if not HAS_WHISPER:
+                reason.append("whisper not installed")
+            print(
+                f"Audio captcha disabled ({', '.join(reason) or 'unavailable'}) — image OCR only.",
+                flush=True,
+            )
 
     def ocr_image(self, png: bytes) -> str:
         cands = [
