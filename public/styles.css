@@ -86,10 +86,58 @@ body {
   line-height: 1.45;
 }
 
-.action {
-  margin-top: 1.75rem;
+.creds {
+  margin-top: 1.5rem;
   display: grid;
   gap: 0.75rem;
+  padding: 1rem;
+  border-radius: 18px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.creds label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.creds span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.creds input {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.7rem 0.85rem;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  font: inherit;
+  font-size: 1rem;
+}
+
+.creds input:focus {
+  outline: 2px solid rgba(15, 110, 86, 0.35);
+  outline-offset: 1px;
+}
+
+.action {
+  margin-top: 1.25rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+@media (min-width: 720px) {
+  .creds {
+    grid-template-columns: 1fr 1fr;
+    padding: 1.15rem;
+  }
 }
 
 #checkBtn {

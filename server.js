@@ -28,7 +28,10 @@ function resolveHeadless() {
 
 const HEADLESS = resolveHeadless();
 
-const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || "*")
+const ALLOWED_ORIGINS = (
+  process.env.CORS_ORIGINS ||
+  "*,https://status-desk.vercel.app,http://localhost:3000"
+)
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -80,7 +83,24 @@ function pushProgress(line) {
   process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
 }
 
-function runStatusCheck() {
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8").trim();
+      if (!raw) return resolve({});
+      try {
+        resolve(JSON.parse(raw));
+      } catch (err) {
+        reject(new Error("Invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function runStatusCheck(overrides = {}) {
   return new Promise((resolve, reject) => {
     const script = path.join(__dirname, "check_status.py");
     const args = [script, "--json"];
@@ -88,7 +108,14 @@ function runStatusCheck() {
 
     const child = spawn(PYTHON, args, {
       cwd: __dirname,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: "1",
+        PASSPORT_USER: overrides.passportUser || process.env.PASSPORT_USER || "",
+        PASSPORT_PASS: overrides.passportPass || process.env.PASSPORT_PASS || "",
+        PASSPORT_FILE_NO: overrides.passportFileNo || process.env.PASSPORT_FILE_NO || "",
+        GST_ARN: overrides.gstArn || process.env.GST_ARN || "",
+      },
       windowsHide: HEADLESS,
     });
 
@@ -179,10 +206,16 @@ const server = http.createServer(async (req, res) => {
     if (busy) {
       return send(res, req, 409, { ok: false, error: "A check is already running." });
     }
+    let overrides = {};
+    try {
+      overrides = await readBody(req);
+    } catch (err) {
+      return send(res, req, 400, { ok: false, error: err.message });
+    }
     busy = true;
     progress = ["Starting status check…"];
     try {
-      const result = await runStatusCheck();
+      const result = await runStatusCheck(overrides);
       lastResult = { ...result, checkedAt: new Date().toISOString() };
       pushProgress("Done.");
       return send(res, req, 200, lastResult);

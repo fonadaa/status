@@ -1,4 +1,5 @@
-const API = () => String(window.STATUS_API || "").replace(/\/$/, "");
+const cfg = window.STATUS_CONFIG || {};
+const API = () => String(window.STATUS_API || cfg.apiUrl || "").replace(/\/$/, "");
 
 const checkBtn = document.getElementById("checkBtn");
 const hint = document.getElementById("hint");
@@ -9,10 +10,32 @@ const stamp = document.getElementById("stamp");
 const passportFields = document.getElementById("passportFields");
 const gstFields = document.getElementById("gstFields");
 
+const fields = {
+  passportUser: document.getElementById("passportUser"),
+  passportPass: document.getElementById("passportPass"),
+  passportFileNo: document.getElementById("passportFileNo"),
+  gstArn: document.getElementById("gstArn"),
+};
+
+// Prefill hardcoded values from config.js
+fields.passportUser.value = cfg.passportUser || "";
+fields.passportPass.value = cfg.passportPass || "";
+fields.passportFileNo.value = cfg.passportFileNo || "";
+fields.gstArn.value = cfg.gstArn || "";
+
 let pollTimer = null;
 
 function apiUrl(path) {
   return `${API()}${path}`;
+}
+
+function getPayload() {
+  return {
+    passportUser: fields.passportUser.value.trim(),
+    passportPass: fields.passportPass.value,
+    passportFileNo: fields.passportFileNo.value.trim(),
+    gstArn: fields.gstArn.value.trim(),
+  };
 }
 
 function row(dl, label, value, isStatus = false) {
@@ -68,15 +91,35 @@ function startPolling() {
   pollTimer = setInterval(async () => {
     try {
       const res = await fetch(apiUrl("/api/progress"));
-      const data = await res.json();
-      if (data.latest) live.textContent = data.latest;
+      const data = await readJson(res);
+      if (data && data.latest) live.textContent = data.latest;
     } catch (_) {
       /* ignore */
     }
   }, 800);
 }
 
+async function readJson(res) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    const snippet = text.replace(/\s+/g, " ").trim().slice(0, 120);
+    throw new Error(
+      snippet.startsWith("<!") || /page could not be found|Not Found/i.test(snippet)
+        ? "API not available on this host. Run locally with npm start, or set apiUrl in config.js to your Render backend."
+        : `Server returned non-JSON: ${snippet || res.status}`
+    );
+  }
+}
+
 async function checkStatus() {
+  const payload = getPayload();
+  if (!payload.passportUser || !payload.passportPass || !payload.passportFileNo || !payload.gstArn) {
+    showError("Fill all fields before checking.");
+    return;
+  }
+
   checkBtn.disabled = true;
   hint.textContent = "Checking… keep this tab open.";
   hint.classList.add("busy");
@@ -86,8 +129,12 @@ async function checkStatus() {
   startPolling();
 
   try {
-    const res = await fetch(apiUrl("/api/check"), { method: "POST" });
-    const data = await res.json();
+    const res = await fetch(apiUrl("/api/check"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await readJson(res);
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || "Status check failed");
     }
@@ -109,7 +156,7 @@ async function checkStatus() {
 checkBtn.addEventListener("click", checkStatus);
 
 fetch(apiUrl("/api/last"))
-  .then((r) => r.json())
+  .then((r) => readJson(r))
   .then((data) => {
     if (data.result && data.result.ok) showResult(data.result);
     if (data.result && data.result.ok === false && data.result.error) {

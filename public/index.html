@@ -7,6 +7,7 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
     <meta name="theme-color" content="#0a4d3c" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>Status Desk</title>
@@ -27,6 +28,25 @@
         <h1>Passport &amp; GST</h1>
         <p class="lede">Tap once. Live status from both portals.</p>
       </header>
+
+      <form id="creds" class="creds" autocomplete="on">
+        <label>
+          <span>Passport email</span>
+          <input id="passportUser" name="passportUser" type="email" required />
+        </label>
+        <label>
+          <span>Passport password</span>
+          <input id="passportPass" name="passportPass" type="password" required />
+        </label>
+        <label>
+          <span>Passport file number</span>
+          <input id="passportFileNo" name="passportFileNo" type="text" required />
+        </label>
+        <label>
+          <span>GST ARN</span>
+          <input id="gstArn" name="gstArn" type="text" required />
+        </label>
+      </form>
 
       <section class="action">
         <button id="checkBtn" type="button">Check status</button>
