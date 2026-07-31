@@ -34,6 +34,7 @@ function payloadFor(mode) {
     passportUser: cfg.passportUser || "",
     passportPass: cfg.passportPass || "",
     passportFileNo: cfg.passportFileNo || "",
+    passportDob: cfg.passportDob || "",
   };
 }
 
@@ -243,9 +244,17 @@ async function checkStatus(mode, sourceBtn) {
     showError("Missing GST ARN in config.js");
     return;
   }
-  if (mode !== "gst" && !(body.passportUser && body.passportPass && body.passportFileNo)) {
-    showError("Missing Passport credentials in config.js");
-    return;
+  if (mode !== "gst") {
+    if (!body.passportFileNo) {
+      showError("Missing passportFileNo in config.js");
+      return;
+    }
+    if (!body.passportDob && !(body.passportUser && body.passportPass)) {
+      showError(
+        "Set passportDob (dd/mm/yyyy) in config.js — the public tracker works from the cloud, login usually does not."
+      );
+      return;
+    }
   }
 
   setBusyUi(sourceBtn, "Checking…");

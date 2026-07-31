@@ -23,6 +23,9 @@ from playwright.sync_api import sync_playwright
 load_dotenv()
 
 LOGIN_URL = "https://services1.passportindia.gov.in/forms/login"
+PASSPORT_TRACK_URL = (
+    "https://portal2.passportindia.gov.in/AppOnlineProject/statusTracker/trackStatusForFileNo"
+)
 GST_URL = "https://services.gst.gov.in/services/arnstatus"
 
 # Low-RAM Chromium flags for GST (Angular SPA, forgiving)
@@ -150,6 +153,203 @@ REALISTIC_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
+
+
+def _passport_status_from_body(body: str) -> dict:
+    def field(label: str) -> str | None:
+        for pat in (
+            rf"(?:^|\n)\s*{label}\s*[:：]\s*([^\n]+)",
+            rf"(?:^|\n)\s*{label}\s*\n\s*([^\n]+)",
+            rf"(?:^|\n)\s*{label}\s*\t+\s*([^\n\t]+)",
+        ):
+            m = re.search(pat, body, re.I)
+            if m:
+                value = re.sub(r"\s+", " ", m.group(1)).strip()
+                if value and value.lower() not in {"-", label.lower()}:
+                    return value
+        return None
+
+    file_number = field(r"File\s*Number") or field(r"File\s*No\.?")
+    application_status = (
+        field(r"Application\s*Status")
+        or field(r"Current\s*Status")
+        or field(r"Status")
+    )
+    # Optional details
+    payment_status = field(r"Payment\s*Status")
+    dispatch = field(r"(?:Dispatch\s*Details|Passport\s*Delivery\s*Details)")
+    return {
+        "file_number": file_number,
+        "application_status": application_status,
+        "payment_status": payment_status,
+        "dispatch": dispatch,
+    }
+
+
+def _fill_first_matching(page, selectors: list[str], value: str) -> bool:
+    for sel in selectors:
+        try:
+            loc = page.locator(sel)
+            if loc.count():
+                loc.first.click()
+                loc.first.fill("")
+                loc.first.type(value, delay=25)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def check_passport_public(browser, solver: CaptchaSolver, file_no: str, dob: str) -> dict:
+    """Use the pre-login 'Track Application Status' page. No login = fewer bot triggers."""
+    print("Passport: opening public tracker…", flush=True)
+    context = browser.new_context(
+        viewport={"width": 1366, "height": 768},
+        user_agent=REALISTIC_UA,
+        locale="en-IN",
+        timezone_id="Asia/Kolkata",
+        ignore_https_errors=True,
+    )
+    context.add_init_script(PASSPORT_STEALTH_JS)
+    page = context.new_page()
+    page.set_default_timeout(25000)
+
+    try:
+        page.goto(PASSPORT_TRACK_URL, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(800)
+
+        # 1) File number
+        filled = _fill_first_matching(
+            page,
+            [
+                'input[name="fileNo"]',
+                'input[id*="fileNo" i]',
+                'input[name*="file" i][type="text"]',
+                'input[placeholder*="File" i]',
+                "form input[type=text]",
+            ],
+            file_no,
+        )
+        if not filled:
+            raise RuntimeError("Public tracker: could not find File Number input.")
+
+        # 2) Date of birth (dd/mm/yyyy expected)
+        filled = _fill_first_matching(
+            page,
+            [
+                'input[name="dob"]',
+                'input[id*="dob" i]',
+                'input[name*="birth" i]',
+                'input[placeholder*="Birth" i]',
+                'input[placeholder*="DD" i]',
+                'input[type="date"]',
+            ],
+            dob,
+        )
+        if not filled:
+            raise RuntimeError("Public tracker: could not find Date of Birth input.")
+
+        # 3) Captcha — try a few common structures
+        captcha_locator = None
+        for sel in (
+            "img[id*='captcha' i]",
+            "img[alt*='captcha' i]",
+            "img[src*='captcha' i]",
+            "img#imgCaptcha",
+        ):
+            try:
+                loc = page.locator(sel)
+                if loc.count() and loc.first.is_visible():
+                    captcha_locator = loc.first
+                    break
+            except Exception:
+                continue
+
+        for attempt in range(1, 6):
+            if not captcha_locator:
+                break
+            png = captcha_locator.screenshot(timeout=6000)
+            code = solver.guess(png)
+            del png
+            gc.collect()
+            print(f"Passport captcha try {attempt}: {code!r}", flush=True)
+            if not code or len(code) < 4:
+                # try refreshing captcha
+                for rsel in ("a[id*='refresh' i]", "button[id*='refresh' i]", "img[alt*='refresh' i]"):
+                    try:
+                        r = page.locator(rsel)
+                        if r.count():
+                            r.first.click(force=True)
+                            page.wait_for_timeout(400)
+                            break
+                    except Exception:
+                        continue
+                continue
+
+            # Fill captcha input
+            _fill_first_matching(
+                page,
+                [
+                    "input[name*='captcha' i]",
+                    "input[id*='captcha' i]",
+                    "input[placeholder*='captcha' i]",
+                ],
+                code,
+            )
+
+            # Submit
+            submitted = False
+            for sel in (
+                "button[type=submit]",
+                "input[type=submit]",
+                "button:has-text('Track Status')",
+                "button:has-text('Submit')",
+            ):
+                try:
+                    loc = page.locator(sel)
+                    if loc.count():
+                        loc.first.click(force=True)
+                        submitted = True
+                        break
+                except Exception:
+                    continue
+            if not submitted:
+                page.keyboard.press("Enter")
+
+            page.wait_for_timeout(2500)
+            body = page.locator("body").inner_text()
+
+            if re.search(r"invalid\s+(?:captcha|characters)", body, re.I):
+                # refresh captcha and retry
+                for rsel in ("a[id*='refresh' i]", "button[id*='refresh' i]"):
+                    try:
+                        r = page.locator(rsel)
+                        if r.count():
+                            r.first.click(force=True)
+                            page.wait_for_timeout(400)
+                            break
+                    except Exception:
+                        continue
+                continue
+
+            info = _passport_status_from_body(body)
+            if info.get("application_status"):
+                return {
+                    "file_number": info.get("file_number") or file_no,
+                    "application_status": info["application_status"],
+                    "payment_status": info.get("payment_status"),
+                    "dispatch": info.get("dispatch"),
+                }
+
+            # Not what we wanted — maybe wrong DOB / file number
+            if re.search(r"(no\s+records?|does\s+not\s+match|invalid\s+file)", body, re.I):
+                raise RuntimeError(
+                    "Passport tracker says the File Number / DOB combination has no records."
+                )
+
+        raise RuntimeError("Passport tracker did not return a status.")
+    finally:
+        context.close()
 
 
 def check_passport(browser, username: str, password: str, file_no: str) -> dict:
@@ -571,6 +771,7 @@ def run_status_check(headless: bool = False, mode: str = "gst") -> dict:
     username = env("PASSPORT_USER")
     password = env("PASSPORT_PASS")
     file_no = env("PASSPORT_FILE_NO")
+    dob = env("PASSPORT_DOB")
     arn = env("GST_ARN")
 
     do_gst = mode in {"gst", "both"}
@@ -579,7 +780,7 @@ def run_status_check(headless: bool = False, mode: str = "gst") -> dict:
     if do_gst and not arn:
         raise RuntimeError("Missing GST_ARN")
 
-    solver = CaptchaSolver() if do_gst else None
+    solver = CaptchaSolver() if (do_gst or do_passport) else None
     passport: dict | None = None
     gst: dict | None = None
     gst_error: str | None = None
@@ -587,9 +788,25 @@ def run_status_check(headless: bool = False, mode: str = "gst") -> dict:
     with sync_playwright() as p:
         # One browser at a time — frees RAM between steps
         if do_passport:
-            if not all([username, password, file_no]):
-                passport = {"error": "Missing passport credentials"}
-            else:
+            if not file_no:
+                passport = {"error": "Missing PASSPORT_FILE_NO"}
+            elif dob:
+                # Preferred: public tracker (no login = no cloud-IP block)
+                browser = launch_browser(p, headless, purpose="passport")
+                try:
+                    passport = check_passport_public(browser, solver, file_no, dob)
+                except Exception as exc:
+                    raw = str(exc) or "Passport check failed"
+                    friendly = raw.split("\n")[0].strip()
+                    if "Timeout" in friendly and "exceeded" in friendly:
+                        friendly = "Passport tracker timed out. Try again."
+                    passport = {"error": friendly}
+                    print(f"Passport failed: {friendly}", flush=True)
+                finally:
+                    browser.close()
+                    gc.collect()
+            elif all([username, password]):
+                # Fallback: login-based (usually blocked on cloud IPs)
                 browser = launch_browser(p, headless, purpose="passport")
                 try:
                     passport = check_passport(browser, username, password, file_no)
@@ -599,13 +816,18 @@ def run_status_check(headless: bool = False, mode: str = "gst") -> dict:
                     if "Timeout" in friendly and "exceeded" in friendly:
                         friendly = (
                             "Passport Seva blocks automated logins from this cloud IP. "
-                            "Try again in a bit, or run the check locally."
+                            "Set PASSPORT_DOB (dd/mm/yyyy) in config to use the "
+                            "public tracker instead."
                         )
                     passport = {"error": friendly}
                     print(f"Passport failed: {friendly}", flush=True)
                 finally:
                     browser.close()
                     gc.collect()
+            else:
+                passport = {
+                    "error": "Set PASSPORT_FILE_NO and PASSPORT_DOB (dd/mm/yyyy) in config."
+                }
 
         if do_gst:
             browser = launch_browser(p, headless, purpose="gst")

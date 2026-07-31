@@ -12,7 +12,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-31-split4";
+const VERSION = "2026-07-31-track1";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
 const JOB_MAX_MS = Number(process.env.JOB_MAX_MS || 3 * 60 * 1000);
@@ -151,6 +151,7 @@ function runStatusCheck(overrides = {}) {
         PASSPORT_USER: overrides.passportUser || process.env.PASSPORT_USER || "",
         PASSPORT_PASS: overrides.passportPass || process.env.PASSPORT_PASS || "",
         PASSPORT_FILE_NO: overrides.passportFileNo || process.env.PASSPORT_FILE_NO || "",
+        PASSPORT_DOB: overrides.passportDob || process.env.PASSPORT_DOB || "",
         GST_ARN: overrides.gstArn || process.env.GST_ARN || "",
       },
       windowsHide: HEADLESS,
