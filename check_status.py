@@ -361,6 +361,38 @@ def _gst_route(route):
             pass
 
 
+def _open_gst_arn_form(page, arn: str) -> None:
+    page.goto(GST_URL, wait_until="domcontentloaded", timeout=25000)
+    page.locator("#ifARN").check(force=True)
+    page.locator("#arnp").fill(arn)
+    page.locator("#imgCaptcha").wait_for(state="visible", timeout=10000)
+
+
+def _try_read_gst_result(page) -> dict | None:
+    try:
+        body = page.locator("body").inner_text()
+    except Exception:
+        return None
+    status = detect_gst_status(body)
+    form_no = parse_gst_field(body, r"Form No\.?")
+    form_desc = parse_gst_field(body, "Form Description")
+    submission = parse_gst_field(body, r"(?:Date of Submission|Submission Date)")
+    has_known_status = any(s.lower() in body.lower() for s in KNOWN_GST_STATUSES)
+    result_visible = (
+        "Search Result based on ARN" in body
+        or has_known_status
+        or (status and (form_no or submission))
+    )
+    if not (result_visible and status):
+        return None
+    return {
+        "status": status,
+        "form_no": form_no,
+        "form_desc": form_desc,
+        "submission": submission,
+    }
+
+
 def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
     print("GST: opening ARN page…", flush=True)
     context = browser.new_context(
@@ -369,18 +401,30 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
     )
     context.route("**/*", _gst_route)
     page = context.new_page()
-    page.set_default_timeout(20000)
+    page.set_default_timeout(15000)
 
     try:
-        page.goto(GST_URL, wait_until="domcontentloaded", timeout=25000)
-        page.locator("#ifARN").check(force=True)
-        page.locator("#arnp").fill(arn)
-        page.locator("#imgCaptcha").wait_for(state="visible", timeout=10000)
+        _open_gst_arn_form(page, arn)
 
         for attempt in range(1, 13):
-            png = page.locator("#imgCaptcha").screenshot()
+            # If the previous submit already advanced us to a result, use it
+            done = _try_read_gst_result(page)
+            if done:
+                return {"arn": arn, **done}
+
+            try:
+                png = page.locator("#imgCaptcha").screenshot(timeout=6000)
+            except Exception:
+                # Captcha element gone (page state weird) — reset the form
+                print(f"GST try {attempt}: captcha missing, reopening…", flush=True)
+                try:
+                    _open_gst_arn_form(page, arn)
+                except Exception:
+                    pass
+                continue
+
             code = solver.guess(png)
-            del png  # release bytes ASAP on 512MB Render
+            del png
             gc.collect()
             print(f"GST try {attempt}: {code!r}", flush=True)
 
@@ -389,38 +433,26 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
                 page.wait_for_timeout(300)
                 continue
 
-            page.locator("#fo-captcha").fill(code)
-            page.locator("#arnpreSearch").click()
+            try:
+                page.locator("#fo-captcha").fill(code)
+                page.locator("#arnpreSearch").click()
+            except Exception:
+                # Form got detached — reopen
+                try:
+                    _open_gst_arn_form(page, arn)
+                except Exception:
+                    pass
+                continue
 
-            # Event-driven wait: as soon as the page shows a result or an error
+            # Event-driven wait — advance as soon as GST responds
             try:
                 page.wait_for_function(OUTCOME_JS, timeout=5000)
             except Exception:
                 pass
 
-            body = page.locator("body").inner_text()
-            status = detect_gst_status(body)
-            form_no = parse_gst_field(body, r"Form No\.?")
-            form_desc = parse_gst_field(body, "Form Description")
-            submission = parse_gst_field(
-                body, r"(?:Date of Submission|Submission Date)"
-            )
-            has_known_status = any(
-                s.lower() in body.lower() for s in KNOWN_GST_STATUSES
-            )
-            result_visible = (
-                "Search Result based on ARN" in body
-                or has_known_status
-                or (status and (form_no or submission))
-            )
-            if result_visible and status:
-                return {
-                    "arn": arn,
-                    "status": status,
-                    "form_no": form_no,
-                    "form_desc": form_desc,
-                    "submission": submission,
-                }
+            done = _try_read_gst_result(page)
+            if done:
+                return {"arn": arn, **done}
 
             refresh_gst_captcha(page)
             page.wait_for_timeout(250)
