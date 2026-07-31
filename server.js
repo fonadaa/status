@@ -12,7 +12,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-31-split2";
+const VERSION = "2026-07-31-split3";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
 const JOB_MAX_MS = Number(process.env.JOB_MAX_MS || 3 * 60 * 1000);

@@ -157,6 +157,15 @@ h1 {
 
 .btn:disabled .btn-shine { animation: none; }
 
+.btn-note {
+  margin: 0.15rem 0.1rem 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.3;
+}
+
 /* Older markup kept as fallback (should not exist now) */
 #checkBtn { display: none; }
 

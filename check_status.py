@@ -25,8 +25,8 @@ load_dotenv()
 LOGIN_URL = "https://services1.passportindia.gov.in/forms/login"
 GST_URL = "https://services.gst.gov.in/services/arnstatus"
 
-# Low-RAM Chromium flags for 512MB Render instances
-CHROME_ARGS = [
+# Low-RAM Chromium flags for GST (Angular SPA, forgiving)
+GST_CHROME_ARGS = [
     "--headless=old",
     "--disable-dev-shm-usage",
     "--disable-gpu",
@@ -44,6 +44,20 @@ CHROME_ARGS = [
     "--disable-features=TranslateUI,BlinkGenPropertyTrees,IsolateOrigins,site-per-process",
     "--js-flags=--max-old-space-size=80",
 ]
+
+# Fewer suspicious flags for Passport Seva (aggressive bot detection)
+PASSPORT_CHROME_ARGS = [
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--disable-background-networking",
+    "--mute-audio",
+    "--no-first-run",
+]
+
+CHROME_ARGS = GST_CHROME_ARGS  # backward compat
 
 
 def env(name: str, default: str = "") -> str:
@@ -79,29 +93,56 @@ def click_exact(page, text: str) -> None:
         page.get_by_text(text, exact=True).first.click(force=True)
 
 
-def launch_browser(playwright, headless: bool):
+def launch_browser(playwright, headless: bool, purpose: str = "gst"):
+    args = PASSPORT_CHROME_ARGS if purpose == "passport" else GST_CHROME_ARGS
     return playwright.chromium.launch(
         headless=headless,
-        args=CHROME_ARGS,
+        args=args,
         chromium_sandbox=False,
     )
 
 
 PASSPORT_STEALTH_JS = """
-Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en-US', 'en'] });
-Object.defineProperty(navigator, 'plugins', {
-  get: () => [1, 2, 3, 4, 5].map(() => ({ name: 'plugin', filename: 'internal' })),
-});
-window.chrome = window.chrome || { runtime: {} };
-const origQuery = window.navigator.permissions && window.navigator.permissions.query;
-if (origQuery) {
-  window.navigator.permissions.query = (parameters) => (
-    parameters && parameters.name === 'notifications'
-      ? Promise.resolve({ state: Notification.permission })
-      : origQuery(parameters)
-  );
-}
+(() => {
+  try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
+  Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en-US', 'en'] });
+  const fakePlugin = (name) => ({
+    name, filename: `internal-${name}`, description: '', length: 1,
+    0: { type: 'application/pdf', suffixes: 'pdf', description: '' },
+  });
+  Object.defineProperty(navigator, 'plugins', {
+    get: () => [fakePlugin('Chrome PDF Plugin'), fakePlugin('Chrome PDF Viewer'), fakePlugin('Native Client')],
+  });
+  Object.defineProperty(navigator, 'mimeTypes', {
+    get: () => [{ type: 'application/pdf', suffixes: 'pdf', description: '' }],
+  });
+  Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+  Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+  Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+  Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+  window.chrome = window.chrome || {};
+  window.chrome.runtime = window.chrome.runtime || { OnInstalledReason: {} };
+  window.chrome.loadTimes = window.chrome.loadTimes || (() => ({ requestTime: 0, startLoadTime: 0 }));
+  window.chrome.csi = window.chrome.csi || (() => ({ pageT: 0, tran: 15 }));
+  const origQuery = window.navigator.permissions && window.navigator.permissions.query;
+  if (origQuery) {
+    window.navigator.permissions.query = (parameters) => (
+      parameters && parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : origQuery(parameters)
+    );
+  }
+  // WebGL vendor spoof
+  try {
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function (p) {
+      if (p === 37445) return 'Intel Inc.';
+      if (p === 37446) return 'Intel Iris OpenGL Engine';
+      return getParameter.call(this, p);
+    };
+  } catch (e) {}
+})();
 """
 
 
@@ -114,7 +155,7 @@ REALISTIC_UA = (
 def check_passport(browser, username: str, password: str, file_no: str) -> dict:
     print("Passport: signing in…", flush=True)
     context = browser.new_context(
-        viewport={"width": 1280, "height": 800},
+        viewport={"width": 1366, "height": 768},
         user_agent=REALISTIC_UA,
         locale="en-IN",
         timezone_id="Asia/Kolkata",
@@ -129,9 +170,10 @@ def check_passport(browser, username: str, password: str, file_no: str) -> dict:
         try:
             page.wait_for_selector('input[type="password"]', timeout=45000)
         except Exception:
-            # Sometimes login UI is inside iframe/lazy — try one more time
             page.wait_for_load_state("networkidle", timeout=15000)
             page.wait_for_selector('input[type="password"]', timeout=15000)
+        # Small human-like pause before interacting
+        page.wait_for_timeout(600)
         # Prefer password login if OTP / Password tabs exist
         for label in ("Password", "Login with Password"):
             tab = page.get_by_text(label, exact=True)
@@ -139,13 +181,18 @@ def check_passport(browser, username: str, password: str, file_no: str) -> dict:
                 for i in range(min(tab.count(), 3)):
                     try:
                         tab.nth(i).click(force=True)
-                        time.sleep(0.4)
+                        page.wait_for_timeout(400)
                         break
                     except Exception:
                         continue
                 break
-        page.locator('input[type="text"]').first.fill(username)
-        page.locator('input[type="password"]').first.fill(password)
+        # Type instead of fill — closer to human input
+        page.locator('input[type="text"]').first.click()
+        page.locator('input[type="text"]').first.type(username, delay=45)
+        page.wait_for_timeout(200)
+        page.locator('input[type="password"]').first.click()
+        page.locator('input[type="password"]').first.type(password, delay=45)
+        page.wait_for_timeout(300)
 
         clicked = False
         for locator in (
@@ -170,12 +217,21 @@ def check_passport(browser, username: str, password: str, file_no: str) -> dict:
         try:
             page.wait_for_url(re.compile(r"Home|homeScreen", re.I), timeout=45000)
         except Exception:
-            body = page.locator("body").inner_text()
+            body = ""
+            try:
+                body = page.locator("body").inner_text()
+            except Exception:
+                pass
             if re.search(r"invalid\s+(?:captcha|user\s*id|password)", body, re.I):
-                raise RuntimeError("Passport site rejected the login credentials/captcha.")
+                raise RuntimeError("Passport site rejected the credentials/captcha.")
             if re.search(r"captcha", body, re.I):
-                raise RuntimeError("Passport login requires captcha (headless mode blocked).")
-            raise RuntimeError("Passport login did not complete (site blocked headless login).")
+                raise RuntimeError(
+                    "Passport site is showing a captcha for automated logins."
+                )
+            raise RuntimeError(
+                "Passport Seva blocks automated logins from this cloud IP. "
+                "Try again in a bit, or run the check locally."
+            )
         page.wait_for_function(
             "() => /Submitted Applications|Welcome back/i.test(document.body.innerText)",
             timeout=45000,
@@ -514,14 +570,17 @@ def run_status_check(headless: bool = False, mode: str = "gst") -> dict:
             if not all([username, password, file_no]):
                 passport = {"error": "Missing passport credentials"}
             else:
-                browser = launch_browser(p, headless)
+                browser = launch_browser(p, headless, purpose="passport")
                 try:
                     passport = check_passport(browser, username, password, file_no)
                 except Exception as exc:
                     raw = str(exc) or "Passport check failed"
                     friendly = raw.split("\n")[0].strip()
                     if "Timeout" in friendly and "exceeded" in friendly:
-                        friendly = "Passport site blocked headless login (bot detection)."
+                        friendly = (
+                            "Passport Seva blocks automated logins from this cloud IP. "
+                            "Try again in a bit, or run the check locally."
+                        )
                     passport = {"error": friendly}
                     print(f"Passport failed: {friendly}", flush=True)
                 finally:
@@ -529,7 +588,7 @@ def run_status_check(headless: bool = False, mode: str = "gst") -> dict:
                     gc.collect()
 
         if do_gst:
-            browser = launch_browser(p, headless)
+            browser = launch_browser(p, headless, purpose="gst")
             try:
                 gst = check_gst(browser, solver, arn)
             except Exception as exc:
