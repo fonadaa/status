@@ -459,23 +459,26 @@ def format_status_message(passport: dict | None, gst: dict | None) -> str:
     return "\n".join(lines)
 
 
-def run_status_check(headless: bool = False, gst_only: bool = True) -> dict:
+def run_status_check(headless: bool = False, mode: str = "gst") -> dict:
     username = env("PASSPORT_USER")
     password = env("PASSPORT_PASS")
     file_no = env("PASSPORT_FILE_NO")
     arn = env("GST_ARN")
 
-    if not arn:
+    do_gst = mode in {"gst", "both"}
+    do_passport = mode in {"passport", "both"}
+
+    if do_gst and not arn:
         raise RuntimeError("Missing GST_ARN")
 
-    solver = CaptchaSolver()
-    passport = None
-    gst = None
-    gst_error = None
+    solver = CaptchaSolver() if do_gst else None
+    passport: dict | None = None
+    gst: dict | None = None
+    gst_error: str | None = None
 
     with sync_playwright() as p:
         # One browser at a time — frees RAM between steps
-        if not gst_only:
+        if do_passport:
             if not all([username, password, file_no]):
                 passport = {"error": "Missing passport credentials"}
             else:
@@ -484,7 +487,6 @@ def run_status_check(headless: bool = False, gst_only: bool = True) -> dict:
                     passport = check_passport(browser, username, password, file_no)
                 except Exception as exc:
                     raw = str(exc) or "Passport check failed"
-                    # Trim Playwright's verbose "===logs===" section
                     friendly = raw.split("\n")[0].strip()
                     if "Timeout" in friendly and "exceeded" in friendly:
                         friendly = "Passport site blocked headless login (bot detection)."
@@ -494,20 +496,21 @@ def run_status_check(headless: bool = False, gst_only: bool = True) -> dict:
                     browser.close()
                     gc.collect()
 
-        browser = launch_browser(p, headless)
-        try:
-            gst = check_gst(browser, solver, arn)
-        except Exception as exc:
-            gst_error = str(exc) or "GST check failed"
-            print(f"GST failed: {gst_error}", flush=True)
-        finally:
-            browser.close()
-            gc.collect()
+        if do_gst:
+            browser = launch_browser(p, headless)
+            try:
+                gst = check_gst(browser, solver, arn)
+            except Exception as exc:
+                gst_error = str(exc) or "GST check failed"
+                print(f"GST failed: {gst_error}", flush=True)
+            finally:
+                browser.close()
+                gc.collect()
 
-    if gst is None and passport is None:
-        raise RuntimeError(gst_error or "No status returned")
-    if gst is None:
+    if do_gst and gst is None:
         gst = {"arn": arn, "error": gst_error or "GST check failed"}
+    if not do_gst and not do_passport:
+        raise RuntimeError("Unknown mode")
     return {"passport": passport, "gst": gst}
 
 
@@ -515,18 +518,33 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--gst-only", action="store_true", help="Only check GST (default for API)")
-    parser.add_argument("--with-passport", action="store_true", help="Also check passport")
+    parser.add_argument(
+        "--mode",
+        choices=["gst", "passport", "both"],
+        default=None,
+        help="Which service to check (default: gst)",
+    )
+    # Backward-compatible flags
+    parser.add_argument("--gst-only", action="store_true")
+    parser.add_argument("--passport-only", action="store_true")
+    parser.add_argument("--with-passport", action="store_true")
     args = parser.parse_args()
-    # Default: GST only. Passport runs ONLY with explicit --with-passport.
-    gst_only = not args.with_passport
-    print(f"Mode: {'GST only' if gst_only else 'Passport + GST'}", flush=True)
+
+    if args.mode:
+        mode = args.mode
+    elif args.passport_only:
+        mode = "passport"
+    elif args.with_passport:
+        mode = "both"
+    else:
+        mode = "gst"
+    print(f"Mode: {mode}", flush=True)
 
     if args.json:
         sys.stdout = sys.stderr
 
     try:
-        result = run_status_check(headless=args.headless, gst_only=gst_only)
+        result = run_status_check(headless=args.headless, mode=mode)
         message = format_status_message(result.get("passport"), result.get("gst"))
         if args.json:
             sys.stdout = sys.__stdout__

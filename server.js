@@ -12,7 +12,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 
-const VERSION = "2026-07-30-fast3";
+const VERSION = "2026-07-31-split1";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC = path.join(__dirname, "public");
 const JOB_MAX_MS = Number(process.env.JOB_MAX_MS || 3 * 60 * 1000);
@@ -125,15 +125,21 @@ function readBody(req) {
   });
 }
 
+function resolveMode(overrides) {
+  const explicit = String(overrides.mode || "").toLowerCase();
+  if (explicit === "gst" || explicit === "passport" || explicit === "both") {
+    return explicit;
+  }
+  if (overrides.passportOnly === true) return "passport";
+  if (overrides.withPassport === true) return "both";
+  return "gst";
+}
+
 function runStatusCheck(overrides = {}) {
   return new Promise((resolve, reject) => {
-    // UI "GST status" button → GST only (avoids Passport login + saves RAM)
-    const args = [path.join(__dirname, "check_status.py"), "--json", "--gst-only"];
+    const mode = resolveMode(overrides);
+    const args = [path.join(__dirname, "check_status.py"), "--json", `--mode=${mode}`];
     if (HEADLESS) args.push("--headless");
-    if (overrides.withPassport === true) {
-      args.splice(args.indexOf("--gst-only"), 1);
-      args.push("--with-passport");
-    }
     console.log("Spawn:", PYTHON, args.join(" "));
 
     const child = spawn(PYTHON, args, {

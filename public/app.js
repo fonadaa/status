@@ -2,8 +2,10 @@ const cfg = window.STATUS_CONFIG || {};
 const API = () => String(window.STATUS_API || cfg.apiUrl || "").replace(/\/$/, "");
 const POLL_MS = 3500;
 
-const checkBtn = document.getElementById("checkBtn");
-const btnLabel = checkBtn.querySelector(".btn-label") || checkBtn;
+const gstBtn = document.getElementById("gstBtn");
+const passportBtn = document.getElementById("passportBtn");
+const buttons = [gstBtn, passportBtn].filter(Boolean);
+
 const live = document.getElementById("live");
 const panel = document.getElementById("panel");
 const errorEl = document.getElementById("error");
@@ -16,8 +18,6 @@ const gstError = document.getElementById("gstError");
 const passportBlock = document.getElementById("passportBlock");
 const passportFields = document.getElementById("passportFields");
 const passportError = document.getElementById("passportError");
-const passportCheckbox = document.getElementById("passportCheckbox");
-if (passportCheckbox) passportCheckbox.checked = cfg.withPassport === true;
 
 let pollTimer = null;
 let pollInFlight = false;
@@ -27,25 +27,31 @@ function apiUrl(path) {
   return `${API()}${path}`;
 }
 
-function withPassportEnabled() {
-  if (passportCheckbox) return passportCheckbox.checked === true;
-  return cfg.withPassport === true;
-}
-
-function payload() {
+function payloadFor(mode) {
   return {
+    mode,
     gstArn: cfg.gstArn || "",
     passportUser: cfg.passportUser || "",
     passportPass: cfg.passportPass || "",
     passportFileNo: cfg.passportFileNo || "",
-    withPassport: withPassportEnabled(),
   };
 }
 
-function setBusyUi(on, label) {
-  checking = on;
-  checkBtn.disabled = on;
-  btnLabel.textContent = on ? label || "Checking…" : "Check status";
+function setBusyUi(busyBtn, label) {
+  checking = !!busyBtn;
+  buttons.forEach((b) => {
+    b.disabled = !!busyBtn;
+  });
+  if (busyBtn) {
+    const l = busyBtn.querySelector(".btn-label");
+    if (l) l.dataset.originalText = l.dataset.originalText || l.textContent;
+    if (l) l.textContent = label || "Checking…";
+  } else {
+    buttons.forEach((b) => {
+      const l = b.querySelector(".btn-label");
+      if (l && l.dataset.originalText) l.textContent = l.dataset.originalText;
+    });
+  }
 }
 
 function row(dl, label, value, isStatus = false) {
@@ -102,7 +108,8 @@ function renderPassport(p) {
 
   if (p.file_number) row(passportFields, "File number", p.file_number);
   if (p.payment_status) row(passportFields, "Payment", p.payment_status);
-  if (p.application_status) row(passportFields, "Status", p.application_status, true);
+  if (p.application_status)
+    row(passportFields, "Status", p.application_status, true);
 
   if (p.error) {
     passportError.hidden = false;
@@ -114,13 +121,18 @@ function renderPassport(p) {
   return hasContent;
 }
 
-function showResult(data) {
-  console.log("Status result:", data);
+function showResult(data, mode) {
+  console.log(`Status result (${mode}):`, data);
   errorEl.hidden = true;
   panel.hidden = false;
 
-  const hasGst = renderGst(data && data.gst);
-  const hasPassport = renderPassport(data && data.passport);
+  const showGst = mode === "gst" || mode === "both";
+  const showPassport = mode === "passport" || mode === "both";
+
+  const hasGst = showGst ? renderGst(data && data.gst) : (gstBlock.hidden = true, false);
+  const hasPassport = showPassport
+    ? renderPassport(data && data.passport)
+    : (passportBlock.hidden = true, false);
 
   stamp.textContent = data && data.checkedAt
     ? `Updated ${new Date(data.checkedAt).toLocaleString()}`
@@ -160,9 +172,8 @@ function postCheck(body) {
 function waitForResult(body) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const maxMs = 6 * 60 * 1000;
+    const maxMs = 4 * 60 * 1000;
     let restartRetries = 0;
-    let sawBusy = false;
     let idleSince = 0;
     live.hidden = false;
 
@@ -178,17 +189,13 @@ function waitForResult(body) {
         const data = await readJson(await fetch(apiUrl("/api/progress")));
         if (data.latest) live.textContent = data.latest;
         if (data.busy) {
-          sawBusy = true;
           idleSince = 0;
         } else if (!data.result) {
-          // Server thinks it isn't running, but we have no result.
-          // Likely Render restarted the process mid-check. Retry the POST.
           idleSince = idleSince || Date.now();
           const idleFor = Date.now() - idleSince;
           if (idleFor > 15000 && restartRetries < 2) {
             restartRetries++;
             idleSince = 0;
-            sawBusy = false;
             live.textContent =
               restartRetries === 1
                 ? "Server restarted, retrying…"
@@ -228,18 +235,24 @@ function waitForResult(body) {
   });
 }
 
-async function checkStatus() {
+async function checkStatus(mode, sourceBtn) {
   if (checking) return;
 
-  const body = payload();
-  if (!body.gstArn) {
+  const body = payloadFor(mode);
+  if (mode !== "passport" && !body.gstArn) {
     showError("Missing GST ARN in config.js");
     return;
   }
+  if (mode !== "gst" && !(body.passportUser && body.passportPass && body.passportFileNo)) {
+    showError("Missing Passport credentials in config.js");
+    return;
+  }
 
-  setBusyUi(true, "Checking…");
+  setBusyUi(sourceBtn, "Checking…");
   errorEl.hidden = true;
   panel.hidden = true;
+  if (mode === "gst") passportBlock.hidden = true;
+  if (mode === "passport") gstBlock.hidden = true;
   live.hidden = false;
   live.textContent = "Starting…";
 
@@ -252,7 +265,7 @@ async function checkStatus() {
       ? "Already checking… joining"
       : "Checking…";
 
-    showResult(await waitForResult(body));
+    showResult(await waitForResult(body), mode);
     live.textContent = "Done";
     setTimeout(() => {
       live.hidden = true;
@@ -262,8 +275,10 @@ async function checkStatus() {
     live.hidden = true;
   } finally {
     stopPolling();
-    setBusyUi(false);
+    setBusyUi(null);
   }
 }
 
-checkBtn.addEventListener("click", checkStatus);
+if (gstBtn) gstBtn.addEventListener("click", () => checkStatus("gst", gstBtn));
+if (passportBtn)
+  passportBtn.addEventListener("click", () => checkStatus("passport", passportBtn));

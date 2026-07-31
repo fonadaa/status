@@ -96,29 +96,43 @@ h1 {
   letter-spacing: -0.035em;
 }
 
-#checkBtn {
+.btn-row {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.35rem;
+  animation: rise 0.65s ease both;
+  animation-delay: 0.05s;
+}
+
+.btn {
   position: relative;
   overflow: hidden;
   appearance: none;
   border: 0;
   width: 100%;
   min-height: 58px;
-  margin-top: 0.35rem;
   border-radius: 999px;
-  background: linear-gradient(135deg, #15946f 0%, var(--accent-deep) 100%);
-  color: #fff;
   font: inherit;
-  font-size: 1.12rem;
+  font-size: 1.08rem;
   font-weight: 800;
   cursor: pointer;
-  box-shadow: 0 14px 30px rgba(12, 74, 62, 0.28);
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
-  animation: rise 0.65s ease both;
-  animation-delay: 0.05s;
 }
 
-#checkBtn .btn-shine {
+.btn.primary {
+  background: linear-gradient(135deg, #15946f 0%, var(--accent-deep) 100%);
+  color: #fff;
+  box-shadow: 0 14px 30px rgba(12, 74, 62, 0.28);
+}
+
+.btn.secondary {
+  background: rgba(18, 48, 40, 0.06);
+  color: var(--accent-deep);
+  border: 1.5px solid rgba(12, 74, 62, 0.18);
+}
+
+.btn .btn-shine {
   position: absolute;
   inset: 0;
   background: linear-gradient(
@@ -131,17 +145,20 @@ h1 {
   animation: shine 4.5s ease-in-out infinite;
 }
 
-#checkBtn:active:not(:disabled) {
+.btn:active:not(:disabled) {
   transform: scale(0.985);
 }
 
-#checkBtn:disabled {
-  opacity: 0.72;
+.btn:disabled {
+  opacity: 0.6;
   cursor: wait;
   box-shadow: none;
 }
 
-#checkBtn:disabled .btn-shine { animation: none; }
+.btn:disabled .btn-shine { animation: none; }
+
+/* Older markup kept as fallback (should not exist now) */
+#checkBtn { display: none; }
 
 .live {
   margin: 0;
@@ -304,7 +321,7 @@ dd.status {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .orb, #checkBtn, .hero, .panel, #checkBtn .btn-shine {
+  .orb, .btn, .btn-row, .hero, .panel, .btn .btn-shine {
     animation: none !important;
   }
 }

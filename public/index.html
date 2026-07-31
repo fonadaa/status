@@ -16,8 +16,8 @@
       href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Nunito:wght@500;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="./styles.css?v=fast2" />
-    <script src="./config.js?v=fast2"></script>
+    <link rel="stylesheet" href="./styles.css?v=split1" />
+    <script src="./config.js?v=split1"></script>
   </head>
   <body>
     <div class="bg" aria-hidden="true">
@@ -30,15 +30,16 @@
    
       </header>
 
-      <button id="checkBtn" type="button">
-        <span class="btn-label">Check status</span>
-        <span class="btn-shine" aria-hidden="true"></span>
-      </button>
+      <div class="btn-row">
+        <button id="gstBtn" type="button" class="btn primary">
+          <span class="btn-label">GST status</span>
+          <span class="btn-shine" aria-hidden="true"></span>
+        </button>
 
-      <label id="passportToggle" class="toggle">
-        <input type="checkbox" id="passportCheckbox" />
-        <span>Also check Passport</span>
-      </label>
+        <button id="passportBtn" type="button" class="btn secondary">
+          <span class="btn-label">Passport status</span>
+        </button>
+      </div>
 
       <p id="live" class="live" hidden></p>
       <section id="error" class="error" hidden></section>
@@ -66,6 +67,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=fast2"></script>
+    <script src="./app.js?v=split1"></script>
   </body>
 </html>
