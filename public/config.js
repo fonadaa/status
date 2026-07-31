@@ -7,7 +7,7 @@ window.STATUS_CONFIG = {
   passportFileNo: "LKN067803930926",
   // Set to your Date of Birth in dd/mm/yyyy — enables the public tracker
   // (no-login) which works from cloud IPs.
-  passportDob: "",
+  passportDob: "12/07/1997",
   gstArn: "AA090726251099S",
   withPassport: false,
 };
