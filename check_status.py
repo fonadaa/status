@@ -283,18 +283,31 @@ def check_passport(browser, username: str, password: str, file_no: str) -> dict:
 
 
 class CaptchaSolver:
-    """Fast solver: raw OCR + one preprocessed pass; picks the ~6-char guess."""
+    """Solver: raw + upscaled + threshold OCR variants; picks the ~6-char guess."""
 
     def __init__(self) -> None:
         print("Loading OCR…", flush=True)
         self.ocr = ddddocr.DdddOcr(show_ad=False)
 
     @staticmethod
-    def _preprocess(png: bytes) -> bytes:
+    def _upscaled(png: bytes) -> bytes:
         try:
             img = Image.open(io.BytesIO(png)).convert("L")
             w, h = img.size
             img = img.resize((w * 2, h * 2), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="PNG")
+            return buf.getvalue()
+        except Exception:
+            return png
+
+    @staticmethod
+    def _threshold(png: bytes) -> bytes:
+        try:
+            img = Image.open(io.BytesIO(png)).convert("L")
+            w, h = img.size
+            img = img.resize((w * 2, h * 2), Image.LANCZOS)
+            img = img.point(lambda p: 0 if p < 140 else 255)
             buf = io.BytesIO()
             img.convert("RGB").save(buf, format="PNG")
             return buf.getvalue()
@@ -310,13 +323,12 @@ class CaptchaSolver:
 
     def guess(self, png: bytes) -> str:
         candidates: list[str] = []
-        for data in (png, self._preprocess(png)):
+        for data in (png, self._upscaled(png), self._threshold(png)):
             code = self._ocr(data)
             if code and code not in candidates:
                 candidates.append(code)
         if not candidates:
             return ""
-        # Prefer 6-char, then 5-char, then longest
         candidates.sort(key=lambda g: (abs(len(g) - 6), -len(g)))
         return candidates[0]
 
@@ -461,22 +473,31 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
 
     try:
         _open_gst_arn_form(page, arn)
+        missing_count = 0
 
-        for attempt in range(1, 13):
+        for attempt in range(1, 16):
             # If the previous submit already advanced us to a result, use it
             done = _try_read_gst_result(page)
             if done:
                 return {"arn": arn, **done}
 
+            # Wait briefly for the captcha to be there before panicking
             try:
-                png = page.locator("#imgCaptcha").screenshot(timeout=6000)
+                page.locator("#imgCaptcha").wait_for(state="visible", timeout=4000)
+                png = page.locator("#imgCaptcha").screenshot(timeout=4000)
+                missing_count = 0
             except Exception:
-                # Captcha element gone (page state weird) — reset the form
-                print(f"GST try {attempt}: captcha missing, reopening…", flush=True)
-                try:
-                    _open_gst_arn_form(page, arn)
-                except Exception:
-                    pass
+                missing_count += 1
+                if missing_count >= 2:
+                    print(f"GST try {attempt}: captcha missing, reopening…", flush=True)
+                    try:
+                        _open_gst_arn_form(page, arn)
+                    except Exception:
+                        pass
+                    missing_count = 0
+                else:
+                    refresh_gst_captcha(page)
+                    page.wait_for_timeout(500)
                 continue
 
             code = solver.guess(png)
@@ -493,7 +514,6 @@ def check_gst(browser, solver: CaptchaSolver, arn: str) -> dict:
                 page.locator("#fo-captcha").fill(code)
                 page.locator("#arnpreSearch").click()
             except Exception:
-                # Form got detached — reopen
                 try:
                     _open_gst_arn_form(page, arn)
                 except Exception:
